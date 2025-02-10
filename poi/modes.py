@@ -50,3 +50,19 @@ def hadamard_modes_sequence(aperture):
     had_modes = np.array(had_modes).reshape(np2, shape_actuators, shape_actuators)
     
     return had_modes
+
+
+def poke_mode_sequence(mask, amplitude=1.):
+
+    modes = []
+    zero_mask = np.zeros_like(mask)
+
+    for i in range(mask.shape[0]):
+        for j in range(mask.shape[1]):
+
+            # poke
+            poke_mode = np.copy(zero_mask)
+            poke_mode[i, j] = amplitude
+            modes.append(poke_mode)
+
+    return modes
