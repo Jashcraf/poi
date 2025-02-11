@@ -52,6 +52,30 @@ def hadamard_modes_sequence(aperture):
     return had_modes
 
 
+def fourier_modes_sequence(Nacts, Nmodes=None, which="cos"):
+
+    max_frequency = Nacts // 2 # cy / pupil
+    u = np.linspace(-1/2, 1/2, Nacts)
+    uu, vv = np.meshgrid(u, u)
+
+    if Nmodes is None:
+        Nmodes = Nacts // 2
+
+    modes = []
+
+    frequency = np.linspace(0, max_frequency, Nmodes)
+    for f in frequency:
+
+        if which == "cos":
+            mode = np.cos(2 * np.pi * f * uu)
+
+        elif which == "sin":
+            mode = np.sin(2 * np.pi * f * uu)
+
+        modes.append(mode)
+
+    return modes
+
 def poke_mode_sequence(mask, amplitude=1.):
 
     modes = []

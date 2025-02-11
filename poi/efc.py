@@ -6,7 +6,7 @@ def tikhonov_inverse(A, rcond=1e-3):
     s_inv = s/(s**2 + (rcond * s.max())**2)
     return (Vt.T * s_inv).dot(U.T)
 
-def beta_reg(J, beta=-2):
+def beta_reg(J, beta=-1):
     # J is the Jacobian
     JTJ = np.matmul(J.T, J)
     rho = np.diag(JTJ)
@@ -56,6 +56,7 @@ class iEFC:
         self.kvec = 2 * np.pi / wavelength
         self.images = []
         self.mean_in_dh = []
+        self.dm_surface = []
 
     def measurement(self):
 
@@ -142,11 +143,15 @@ class iEFC:
         del_command = modal_matrix.T.dot(modal_coeff).reshape(self.dm.Nact)
         self.total_command = (1 - leakage) * self.total_command + loop_gain * del_command
 
+        # remove the mean command
+        # self.total_command -= np.mean(self.total_command)
+
         self.dm.actuators[:] += self.total_command
 
         # take an image
         img = np.abs(self.fwd(np.exp(1j * self.dm.render(wfe=True))))**2
         self.images.append(img)
         self.mean_in_dh.append(np.mean(img[self.dh==1]))
+        self.dm_surface.append(self.dm.render())
 
         return img
