@@ -6,7 +6,7 @@ def tikhonov_inverse(A, rcond=1e-3):
     s_inv = s/(s**2 + (rcond * s.max())**2)
     return (Vt.T * s_inv).dot(U.T)
 
-def beta_reg(J, beta=-1):
+def beta_reg(J, beta=-2.5):
     # J is the Jacobian
     JTJ = np.matmul(J.T, J)
     rho = np.diag(JTJ)
@@ -17,7 +17,8 @@ def beta_reg(J, beta=-1):
 
 class iEFC:
 
-    def __init__(self, propagation, dm, modes, probes, dh, probe_amplitude=1., mode_amplitude=1., wavelength=1):
+    def __init__(self, propagation, dm, modes, probes, dh, probe_amplitude=1., mode_amplitude=1., wavelength=1,
+                 ref_contrast=1):
         """Instance of an implicit Electric Field Conjugation experiment,
 
         Substantial portions of this code were adapted from aefc_vortex, by Kian Milani
@@ -44,6 +45,8 @@ class iEFC:
             amplitude of the modeas, radians, by default 1.
         wavelength : float, optional
             wavelength in microns, by default 1
+        ref_contrast : float, optional
+            maximum of the unocculted PSF
         """
 
         self.fwd = propagation
@@ -57,6 +60,7 @@ class iEFC:
         self.images = []
         self.mean_in_dh = []
         self.dm_surface = []
+        self.ref_contrast = ref_contrast
 
     def measurement(self):
 
@@ -66,14 +70,14 @@ class iEFC:
 
             # apply the positive mode
             self.dm.actuators[:] += probe * self.probe_amplitude
-            im_pos = np.abs(self.fwd(np.exp(1j * self.dm.render(wfe=True))))**2
+            im_pos = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2 / self.ref_contrast
 
             # remove surface
             self.dm.actuators[:] -= probe * self.probe_amplitude
 
             # apply the negative mode
             self.dm.actuators[:] += -1 * probe * self.probe_amplitude
-            im_neg = np.abs(self.fwd(np.exp(1j * self.dm.render(wfe=True))))**2
+            im_neg = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2 / self.ref_contrast
 
             # remove the surface
             self.dm.actuators[:] -= -1 * probe * self.probe_amplitude
@@ -114,8 +118,8 @@ class iEFC:
             
         self.response_matrix = np.array(response_matrix).T
 
-    def compute_control_matrix(self):
-        self.control_matrix = beta_reg(self.response_matrix)
+    def compute_control_matrix(self, beta=-2.5):
+        self.control_matrix = beta_reg(self.response_matrix, beta=beta)
 
     def step(self, loop_gain=1., leakage=0., update_probe_amplitude=None):
 
@@ -132,8 +136,9 @@ class iEFC:
             print("Taking starter image at position zero")
             
             # take a starter image
-            img = np.abs(self.fwd(np.exp(1j * self.dm.render(wfe=True))))**2
-            self.images.append(img)
+            img = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2
+            self.images.append(img / self.ref_contrast)
+            self.mean_in_dh.append(np.mean(img[self.dh==1]))
 
         diff_ims = self.measurement()
         measurement_vector = diff_ims[:, self.dh==1].ravel()
@@ -149,7 +154,7 @@ class iEFC:
         self.dm.actuators[:] += self.total_command
 
         # take an image
-        img = np.abs(self.fwd(np.exp(1j * self.dm.render(wfe=True))))**2
+        img = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2 / self.ref_contrast
         self.images.append(img)
         self.mean_in_dh.append(np.mean(img[self.dh==1]))
         self.dm_surface.append(self.dm.render())
