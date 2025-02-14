@@ -140,6 +140,11 @@ class iEFC:
             self.images.append(img / self.ref_contrast)
             self.mean_in_dh.append(np.mean(img[self.dh==1]))
 
+        print("Amplitudes")
+        print("-"*20)
+        print(self.probe_amplitude)
+        print(self.mode_amplitude)
+
         diff_ims = self.measurement()
         measurement_vector = diff_ims[:, self.dh==1].ravel()
         modal_matrix = np.asarray(self.modes).reshape(len(self.modes), -1)
