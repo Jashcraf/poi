@@ -70,14 +70,14 @@ class iEFC:
 
             # apply the positive mode
             self.dm.actuators[:] += probe * self.probe_amplitude
-            im_pos = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2 / self.ref_contrast
+            im_pos = self.fwd(self.dm.render(wfe=True)) / self.ref_contrast
 
             # remove surface
             self.dm.actuators[:] -= probe * self.probe_amplitude
 
             # apply the negative mode
             self.dm.actuators[:] += -1 * probe * self.probe_amplitude
-            im_neg = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2 / self.ref_contrast
+            im_neg = self.fwd(self.dm.render(wfe=True)) / self.ref_contrast
 
             # remove the surface
             self.dm.actuators[:] -= -1 * probe * self.probe_amplitude
@@ -136,14 +136,9 @@ class iEFC:
             print("Taking starter image at position zero")
             
             # take a starter image
-            img = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2
-            self.images.append(img / self.ref_contrast)
+            img = self.fwd(self.dm.render(wfe=True)) / self.ref_contrast
+            self.images.append(img)
             self.mean_in_dh.append(np.mean(img[self.dh==1]))
-
-        print("Amplitudes")
-        print("-"*20)
-        print(self.probe_amplitude)
-        print(self.mode_amplitude)
 
         diff_ims = self.measurement()
         measurement_vector = diff_ims[:, self.dh==1].ravel()
@@ -159,7 +154,7 @@ class iEFC:
         self.dm.actuators[:] += self.total_command
 
         # take an image
-        img = np.abs(self.fwd(np.exp(1j * self.kvec * self.dm.render(wfe=True))))**2 / self.ref_contrast
+        img = self.fwd(self.dm.render(wfe=True)) / self.ref_contrast
         self.images.append(img)
         self.mean_in_dh.append(np.mean(img[self.dh==1]))
         self.dm_surface.append(self.dm.render())
