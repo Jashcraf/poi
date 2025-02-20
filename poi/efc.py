@@ -2,11 +2,40 @@ from prysm.mathops import np
 from tqdm import tqdm
 
 def tikhonov_inverse(A, rcond=1e-3):
+    """Compute a matrix pseudo-inverse using Tikhonov Regularization
+
+    Parameters
+    ----------
+    A : ndarray
+        2 dimensional ndarray to invert
+    rcond : float, optional
+        unsure, suspect it has to do with the spatial frequency supression,
+        by default 1e-3
+
+    Returns
+    -------
+    ndarray
+        inverted matrix
+    """
     U, s, Vt = np.linalg.svd(A, full_matrices=False)
     s_inv = s/(s**2 + (rcond * s.max())**2)
     return (Vt.T * s_inv).dot(U.T)
 
 def beta_reg(J, beta=-2.5):
+    """Compute a matrix pseudo-inverse using Beta Regularization
+
+    Parameters
+    ----------
+    J : ndarray
+        2 dimensional matrix to invert
+    beta : float, optional
+        power of spatial frequency supression, by default -2.5
+
+    Returns
+    -------
+    ndarray
+        beta-regularized inverted matrix
+    """
     # J is the Jacobian
     JTJ = np.matmul(J.T, J)
     rho = np.diag(JTJ)
@@ -63,6 +92,13 @@ class iEFC:
         self.ref_contrast = ref_contrast
 
     def measurement(self):
+        """Take a difference of probe measurements to estimate the E-field
+
+        Returns
+        -------
+        ndarray
+            difference image used to estimate E-field
+        """
 
         difference_images = []
 
@@ -89,6 +125,8 @@ class iEFC:
 
 
     def calibrate(self):
+        """Empirically calibrate EFC Response Matrix
+        """
 
         response_matrix = []
 
@@ -119,9 +157,36 @@ class iEFC:
         self.response_matrix = np.array(response_matrix).T
 
     def compute_control_matrix(self, beta=-2.5):
+        """Invert the response matrix with beta regularization to get the
+        control matrix
+
+        Parameters
+        ----------
+        beta : float, optional
+            see beta_reg docstring, by default -2.5
+        """
         self.control_matrix = beta_reg(self.response_matrix, beta=beta)
 
     def step(self, loop_gain=1., leakage=0., update_probe_amplitude=None):
+        """Advance the iEFC algorithm one iteration, computes the control matrix
+        if it has not been computed yet.
+
+        Parameters
+        ----------
+        loop_gain : float, optional
+            gain of the updated DM actuator command, by default 1.
+        leakage : float, optional
+            how much the total command reduces as the iterations progress,
+            by default 0.
+        update_probe_amplitude : float, optional
+            the amplitude to apply to the user-specified probes, by default None,
+            which uses the last stored value of amplitude
+
+        Returns
+        -------
+        ndarray
+            image after the EFC correction is applied
+        """
 
         if not hasattr(self, "control_matrix"):
             self.compute_control_matrix()

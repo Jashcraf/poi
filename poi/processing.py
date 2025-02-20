@@ -137,3 +137,70 @@ def phase_unwrap_2d(phase_wrapped):
     phi = np.fft.ifft2(phi)[:M,:N]
     phout = np.real(phi)
     return phout
+
+
+def azimuthal_average(image, center=None, angle_range=[-45, 45]):
+    """
+    Calculate the azimuthal average of an image over a specified angular range.
+    Thanks to Claude AI by Anthropic for the function
+    
+    Parameters:
+    -----------
+    image : 2D numpy array
+        The input image
+    center : tuple, optional
+        The (x,y) coordinates of the center. If None, uses the image center
+    angle_range : tuple, optional
+        The (min_angle, max_angle) in degrees for averaging. If None, uses full 360°
+        
+    Returns:
+    --------
+    radial_profile : numpy array
+        The azimuthally averaged radial profile
+    r_bins : numpy array
+        The radial distances corresponding to the profile points
+    """
+    
+    # Get image dimensions and center
+    y, x = np.indices(image.shape)
+    if center is None:
+        center = ((x.max() - x.min()) / 2., (y.max() - y.min()) / 2.)
+    
+    # Calculate radius and angle for each pixel
+    r = np.sqrt((x - center[0])**2 + (y - center[1])**2)
+    theta = np.degrees(np.arctan2(y - center[1], x - center[0]))
+    
+    # Make theta range from 0 to 360
+    theta = np.where(theta < 0, theta + 360, theta)
+    
+    # Set up angle range
+    if angle_range is None:
+        min_angle, max_angle = 0, 360
+    else:
+        min_angle, max_angle = angle_range
+        # Ensure angles are in 0-360 range
+        min_angle = min_angle % 360
+        max_angle = max_angle % 360
+    
+    # Create mask for angular range
+    if min_angle <= max_angle:
+        mask = (theta >= min_angle) & (theta <= max_angle)
+    else:  # Handle case where range crosses 0°
+        mask = (theta >= min_angle) | (theta <= max_angle)
+    
+    # Apply mask to image and radius array
+    masked_image = image[mask]
+    masked_r = r[mask]
+    
+    # Define radius bins
+    r_max = np.max(r)
+    r_bins = np.linspace(0, r_max, min(int(r_max), 100))
+    
+    # Calculate radial profile
+    radial_profile = np.zeros_like(r_bins)
+    for i in range(len(r_bins)-1):
+        r_mask = (masked_r >= r_bins[i]) & (masked_r < r_bins[i+1])
+        if r_mask.any():
+            radial_profile[i] = masked_image[r_mask].mean()
+    
+    return radial_profile, r_bins

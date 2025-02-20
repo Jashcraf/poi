@@ -128,6 +128,10 @@ class SpeckleNulling:
             print("No waffle image detected, taking waffle image for image center")
             self.get_image_center()
 
+        if len(self.images) < 1:
+            print("Taking starter image at position zero")
+            self.images.append(self.fwd(self.dm.render(wfe=True)))
+
          # the probe offsets
         if self.nsteps == 4:
             probe_phases = [0, np.pi/2, np.pi, 3 * np.pi / 2]
@@ -172,6 +176,7 @@ class SpeckleNulling:
         # amplitude = np.sqrt(real**2 + imag**2) * gain
 
         # amplitude from implicit conversion
+        # This method was taken from Luci Lebilloux's HICAT paper
         probe_intensity = I1
         speckle_intensity = img_max
         amplitude = gain * probe_amplitude * np.sqrt(img_max / I1)
@@ -186,6 +191,7 @@ class SpeckleNulling:
 
         # return an image
         img_corrected = self.fwd(self.dm.render(wfe=True))
+        self.images.append(img_corrected)
 
         if return_probe_images:
             return img_corrected, probe_images
