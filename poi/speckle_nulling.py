@@ -1,5 +1,6 @@
 from prysm.mathops import np
 from prysm.coordinates import make_xy_grid, cart_to_polar
+from .modes import fourier_modes_sequence
 
 def find_max_index(array):
     index = np.unravel_index(array.argmax(), array.shape)
@@ -197,5 +198,61 @@ class SpeckleNulling:
             return img_corrected, probe_images
         else:
             return img_corrected
+        
+
+class SpeckleAreaNulling:
+
+    def __init__(self, propagation, dx_img, epd, efl, wvl, dm, IWA, OWA, ref_contrast=1):
+
+        self.fwd = propagation
+        self.dm = dm
+        self.dx_img = dx_img
+        self.epd = epd
+        self.efl = efl
+        self.wvl = wvl
+        self.image_dx_lamD = self.dx_img * 1e-6 / (self.efl * 1e-3) * (self.epd * 1e-3) / (self.wvl * 1e-6)
+        self.IWA = IWA
+        self.OWA = OWA
+        self.kvec = 2 * np.pi / wvl
+        self.images = []
+        self.mean_in_dh = []
+        self.dm_surface = []
+        self.ref_contrast = ref_contrast
+        self.nsteps = 4
+        self.nact = self.dm.Nact
+
+        # construct a dark hole
+        self.Nimg = self.fwd().shape[0]
+        x, y = make_xy_grid(self.Nimg, dx=self.image_dx_lamD)
+        r, t = cart_to_polar(x, y)
+
+        self.dh = np.zeros([self.Nimg, self.Nimg])
+        self.dh[r < self.OWA] = 1.
+        self.dh[r < self.IWA] = 0.
+
+        # Build up the fourier mode basis
+        # - recall: real modes are cosines within DH,
+        #           imag modes are sines within DH
+
+        self.real_modes = fourier_modes_sequence(self.nact, which="cos")
+        self.real_probe = np.sum(self.real_modes, axis=0)
+        self.real_probe /= np.max(self.real_probe)
+        self.imag_modes = fourier_modes_sequence(self.nact, which="sin")
+        self.imag_probe = np.sum(self.imag_modes, axis=0)
+        self.imag_probe /= np.max(self.imag_probe)
+
+        pass
+
+    def step(self):
+        
+        # Starting image acquisition
+
+        # Four probe steps
+
+        # Reconstruct DM commands
+
+        # Apply correction
+        
+        pass
 
 
