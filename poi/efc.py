@@ -192,7 +192,7 @@ class iEFC:
             self.compute_control_matrix()
 
         if not hasattr(self, "total_command"):
-            self.total_command = np.zeros(self.dm.Nact)
+            self.total_command = np.zeros(self.dm.Nact, dtype=np.float64)
 
         if update_probe_amplitude is not None:
             self.probe_amplitude = update_probe_amplitude
@@ -216,7 +216,7 @@ class iEFC:
         # remove the mean command
         # self.total_command -= np.mean(self.total_command)
 
-        self.dm.actuators[:] += self.total_command
+        self.dm.actuators[:] = self.total_command
 
         # take an image
         img = self.fwd(self.dm.render(wfe=True)) / self.ref_contrast
