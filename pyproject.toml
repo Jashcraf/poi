@@ -1,0 +1,31 @@
+[project]
+name = "poi"
+version = "0.1.0"
+description = "Extensions to prysm for coronagraph design, wavefront control, and post-processing"
+readme = "README.md"
+requires-python =">=3.8"
+license = {file = "LICENSE.md"}
+authors = [
+  {name = "Jaren N. Ashcraft", email = "jarenashcraft@ucsb.edu"},
+]
+
+keywords = ["python", "optics", "telescope", "coronagraph", "high-contrast", "wavefront sensing"]
+dependencies = ["numpy", "scipy", "tqdm"]
+
+classifiers=[
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+GitHub = "https://github.com/jashcraf/poi"
+
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "."
+]
