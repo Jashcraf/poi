@@ -10,7 +10,11 @@ authors = [
 ]
 
 keywords = ["python", "optics", "telescope", "coronagraph", "high-contrast", "wavefront sensing"]
-dependencies = ["numpy", "scipy", "tqdm"]
+dependencies = ["numpy",
+               "scipy==1.13.1",
+               "tqdm",
+               "astropy",
+               "matplotlib"]
 
 classifiers=[
     "Programming Language :: Python :: 3",
@@ -20,6 +24,9 @@ classifiers=[
 [project.urls]
 GitHub = "https://github.com/jashcraf/poi"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["poi"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
