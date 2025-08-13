@@ -3,7 +3,7 @@
 
 Greetings traveler, if you are here it's because you made some questionable choices in life that lead you to designing coronagraphs. Don't you know that the only way to achieve unaberrated imaging is by blocking all photons?
 
-Regardless, herein lies an attempt at a tutorial to performing the APLC design methodology we wrote in Ashcraft et al. 2025. It leverages the algorithmic differentiation builtin to the `prysm` optical propagation package written by Brandon Dube, and an adaptation of a `vAPPOptimizer` written by Brandon. I also added a minor line of code to make L-BFGS-B happy using `cupy`. 
+Regardless, herein lies an attempt at a tutorial to performing the APLC design methodology we wrote in Ashcraft et al. 2025. It leverages the algorithmic differentiation builtin to the `prysm` optical propagation package written by Brandon Dube, and an adaptation of a `vAPPOptimizer` written by Brandon. I also added a minor line of code to make L-BFGS-B happy using `cupy`.
 """
 
 
@@ -22,7 +22,7 @@ from prysm.propagation import focus_fixed_sampling
 
 # Available optimizers
 from prysm.x.optym import (
-    F77LBFGSB, # 
+    F77LBFGSB, #
     Yogi,
     Adam,
     GradientDescent,
@@ -54,7 +54,7 @@ pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 LS_FRAC = 0.85
 LS_OBSCURATION_RATIO = 0.15
 MAX_ITERS = 12_000
-# --- 
+# ---
 
 
 # Set up the bandpass
@@ -135,7 +135,7 @@ throughput = ThroughputOptimizer(amp=aperture-noisy,
                                  wvl=WVL,
                                  basis=None,
                                  ls=ls_mask,
-                                 relative_weight=1e-6)
+                                 relative_weight=1e-10)
 
 aplc.set_optimization_method(zonal=True)
 throughput.set_optimization_method(zonal=True)
@@ -156,9 +156,11 @@ opt.iprint = 0
 
 # some timing
 t1 = time.perf_counter()
-for _ in tqdm(range(MAX_ITERS)):
-    opt.step()
-
+try:
+    for _ in tqdm(range(MAX_ITERS)):
+        opt.step()
+except StopIteration:
+    pass
 print(f"Time to Optimizer for {MAX_ITERS}")
 print(time.perf_counter() - t1)
 
@@ -188,4 +190,142 @@ if np.__name__ == "cupy":
 else:
     plt.imshow(ls_mask*(np.abs(aplc.c)),cmap='inferno')
 plt.colorbar()
+
+okabe_colorblind8 = ['#000000', '#E69F00', '#56B4E9', '#009E73',
+                     '#F0E442', '#0072B2', '#D55E00', '#CC79A7']
+
+def prop_coro(aplc, fpm, ls, wave=WVL, tilt=0, include_fpm=True):
+
+    pupil_npix = PUPIL_NPIX
+
+    # get the tilt phase
+    x = np.linspace(-0.5, 0.5, pupil_npix)
+    tilt_phase = np.exp(1j * 2 * np.pi * x * tilt)
+
+
+    before_fpm = focus_fixed_sampling(
+                wavefunction= aplc * tilt_phase,
+                input_dx=pupil_dx,
+                prop_dist = EFL,
+                wavelength= wave,
+                output_dx= img_dx,
+                output_samples=(IMG_NPIX, IMG_NPIX),
+                shift=(0, 0),
+                method='mdft')
+
+    if include_fpm:
+        before_fpm *= fpm
+
+    before_ls = focus_fixed_sampling(
+                wavefunction=before_fpm,
+                input_dx=img_dx,
+                prop_dist = EFL,
+                wavelength= wave,
+                output_dx= pupil_dx,
+                output_samples=(pupil_npix, pupil_npix),
+                shift=(0, 0),
+                method='mdft')
+
+    coro_img_onax = focus_fixed_sampling(
+                wavefunction=before_ls * ls,
+                input_dx=pupil_dx,
+                prop_dist = EFL,
+                wavelength= wave,
+                output_dx= img_dx,
+                output_samples=(IMG_NPIX, IMG_NPIX),
+                shift=(0, 0),
+                method='mdft')
+
+    return before_fpm, before_ls, coro_img_onax
+
+fx = np.linspace(-IMG_NPIX / (2 * OVERSAMPLE), IMG_NPIX / (2 * OVERSAMPLE), IMG_NPIX)
+fx, fy = np.meshgrid(fx, fx)
+
+# 14 mins uh oh
+from matplotlib.colors import LogNorm
+from tqdm import tqdm
+tilt_lds = np.arange(0, 12, 0.25)
+core_size = 0.7
+throughput = []
+
+throughput_07 = []
+
+# Get the contrast normalization
+before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=False)
+contrast_norm = (np.abs(before)**2).max()
+
+before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=True)
+contrast_onax = np.abs(coro)**2 / contrast_norm
+
+for i, ld in tqdm(enumerate(tilt_lds)):
+
+    before, ls, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=ld)
+    before_I = np.sum(np.abs(before)**2)
+    coro_I = np.abs(coro)**2
+    throughput.append(np.sum(coro_I) / np.sum(aperture))
+
+    # get value in 0.7 L/D (recall 1/OS is pixelscale in L/D)
+    fx = np.linspace(-IMG_NPIX / (2 * OVERSAMPLE), IMG_NPIX / (2 * OVERSAMPLE), IMG_NPIX)
+    fx, fy = np.meshgrid(fx, fx)
+    fx += ld
+    rx = np.sqrt(fx**2 + fy**2)
+    mask = np.zeros_like(rx, dtype=int)
+    mask[rx < core_size] = 1
+
+    value_in_aperture = np.sum(coro_I[mask==1])
+    throughput_07.append(value_in_aperture / np.sum(aperture))
+
+# get the bmh colors
+plt.style.use("bmh")
+colors = plt.rcParams['axes.prop_cycle'].by_key()['color'][1:]
+
+def radial_profile(data, center=[int(IMG_NPIX/2),int(IMG_NPIX/2)]):
+    y, x = tnp.indices((data.shape))
+    r = tnp.sqrt((x - center[0])**2 + (y - center[1])**2)
+    r = r.astype(int)
+
+    tbin = tnp.bincount(r.ravel(), data.ravel())
+    nr = tnp.bincount(r.ravel())
+    radialprofile = tbin / nr
+    return radialprofile
+
+plt.figure(figsize=[12,4])
+plt.subplot(121)
+if np.__name__ == "cupy":
+    plt.plot(tilt_lds.get(), np.array(throughput).get(), linestyle='dashed', color=colors[0])
+    plt.plot(tilt_lds.get(), np.array(throughput_07).get(), linestyle='solid', color=colors[0])
+    plt.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
+    plt.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='dashed', color='black', label=r'$r = \infty$')
+else:
+    plt.plot(tilt_lds, np.array(throughput), linestyle='dashed', color=colors[0])
+    plt.plot(tilt_lds, np.array(throughput_07), linestyle='solid', color=colors[0])
+    plt.plot(tilt_lds, -np.array(throughput), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
+# plt.vlines(3.5,-1,1, color=colors[0], alpha=0.5)
+# plt.vlines(2.5,-1,1, color=colors[1], alpha=0.5)
+plt.xlabel('Angular Separation, '+r'$\lambda / D$')
+# plt.text(3, 0.15, 'APLC-3.5 IWA', rotation=90, color=colors[0], fontweight='bold')
+# plt.text(2, 0.15, 'APLC-2.5 IWA', rotation=90, color=colors[1], fontweight='bold')
+plt.ylabel('Throughput')
+plt.legend(loc='lower right')
+plt.ylim(0,1)
+plt.xlim(0,12)
+
+# get radial
+radial_profile = radial_profile(contrast_onax.get())
+x_axis = tnp.ones_like(radial_profile) # just get array size
+dx_ld = 1/OVERSAMPLE # pixelscale in lambda/D
+x_ticks = [dx_ld*i for i in range(len(x_axis))]
+x_ticks = tnp.array(x_ticks)
+
+plt.subplot(122)
+plt.plot(x_ticks, radial_profile, color=colors[0], label='APLC')
+# plt.vlines(3.5,0,1, color=colors[0], alpha=0.5, linestyle='solid')
+# plt.vlines(2.5,0,1, color=colors[1], alpha=0.5, linestyle='solid')
+plt.xlabel('Angular Separation, '+r'$\lambda / D$')
+plt.xlim(0,12)
+plt.ylim(1e-12, 1e-5)
+plt.yscale('log')
+plt.ylabel('Normalized Intensity')
+plt.legend()
+# plt.savefig('coronagraph_throughput_and_contrast.pdf')
 plt.show()
