@@ -19,10 +19,14 @@ import numpy as tnp
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
 from prysm.propagation import focus_fixed_sampling
+from prysm.fttools import MatrixDFTExecutor
+
 
 # Available optimizers
 from prysm.x.optym import (
-    F77LBFGSB, #
+    F77LBFGSB, # The one that works with Box constraints
+
+    # These are untested, but need to include something to bound the solution
     Yogi,
     Adam,
     GradientDescent,
@@ -35,31 +39,41 @@ from prysm.x.optym import (
 from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
 from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 
-# np switches from numpy to cupy
-set_backend_to_cupy()
 
 # --- USER INPUT DESIGN PARAMS HERE
+USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
-WVL = 0.656 # microns
-IMG_NPIX = 256
+WVL = 0.650 # microns
+IMG_NPIX = 256 + 128
 IWA = 5
-OWA = 12
-AZMIN = -89
+OWA = 21
+AZMIN = -89 # Defines the angular extend of the dark zone
 AZMAX = 89
-BANDWIDTH = 10 # percent
-NWVLS = 5
-OVERSAMPLE = 8
+BANDWIDTH = 20 # percent
+NWVLS = 3
+OVERSAMPLE = 8 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
-LS_FRAC = 0.85
-LS_OBSCURATION_RATIO = 0.15
-MAX_ITERS = 12_000
+LS_FRAC = 0.85 # Fraction of the pupil radius to use for the Lyot stop
+LS_OBSCURATION_RATIO = 0.15 # Ratio of the Lyot stop obscuration to the pupil radius
+MAX_ITERS = 20_00
+core_size = 0.7 # radius in lam/D
+THROUGHPUT_RELATIVE_WEIGHT = 1e-10 # relative weight of the throughput optimization
 # ---
 
+if USE_GPU:
+    # np switches from numpy to cupy
+    set_backend_to_cupy()
+
+tilt_lds = np.arange(0, OWA, 0.25)
+
+mdft = MatrixDFTExecutor()
+mdft.clear()
 
 # Set up the bandpass
 half_bw = BANDWIDTH / 2 / 100
 band = np.linspace(WVL * (1-half_bw), WVL * (1 + half_bw), NWVLS)
+print(band)
 
 # Set the FPM inner working angle and outer working angle to have margin before dark hole
 FPM_IWA = (1 + half_bw) * IWA
@@ -119,34 +133,41 @@ else:
 
 # Break hermetian symmetry with a little bit of random noise
 noisy = np.random.random(aperture.shape) * aperture / 1000
-
-aplc = APLCOptimizer(amp = aperture - noisy,
-                     amp_dx=pupil_dx,
-                     efl=EFL,
-                     wvl=WVL,
-                     basis=None,
-                     dark_hole=dh,
-                     dh_target=0, # allows for specific contrast targeting, 0 just means "make it dark pls"
-                     dh_dx=img_dx,
-                     fpm=focal_plane_mask,
-                     ls=ls_mask)
+optlist = []
+for wave in band:
+    aplc = APLCOptimizer(amp = aperture - noisy,
+                        amp_dx=pupil_dx,
+                        efl=EFL,
+                        wvl=wave,
+                        basis=None,
+                        dark_hole=dh,
+                        dh_target=1e-15, # allows for specific contrast targeting, 0 just means "make it dark pls"
+                        dh_dx=img_dx,
+                        fpm=focal_plane_mask,
+                        ls=ls_mask)
+    aplc.set_optimization_method(zonal=True)
+    optlist.append(aplc)
 
 throughput = ThroughputOptimizer(amp=aperture-noisy,
                                  wvl=WVL,
                                  basis=None,
                                  ls=ls_mask,
-                                 relative_weight=1e-10)
+                                 relative_weight=THROUGHPUT_RELATIVE_WEIGHT)
 
-aplc.set_optimization_method(zonal=True)
 throughput.set_optimization_method(zonal=True)
-
-optlist = [aplc, throughput]
+optlist.append(throughput)
 
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
 
 # starting guess is a filled aperture
-x0 = tnp.ones(aplc.amp.get().shape, dtype=float)[aplc.amp_select.get()]
+if np.__name__ == "cupy":
+    x0 = tnp.ones(aplc.amp.get().shape, dtype=float)[aplc.amp_select.get()]
+else:
+    x0 = tnp.ones(aplc.amp.shape, dtype=float)[aplc.amp_select]
+
+# Dry-run to debug
+opt_contrast_throughput.fg(x0)
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
@@ -156,6 +177,9 @@ opt.iprint = 0
 
 # some timing
 t1 = time.perf_counter()
+
+# This is in a try-except block because the optimizer will
+# sometimes raise a StopIteration exception when it is done
 try:
     for _ in tqdm(range(MAX_ITERS)):
         opt.step()
@@ -244,8 +268,6 @@ fx, fy = np.meshgrid(fx, fx)
 # 14 mins uh oh
 from matplotlib.colors import LogNorm
 from tqdm import tqdm
-tilt_lds = np.arange(0, 12, 0.25)
-core_size = 0.7
 throughput = []
 
 throughput_07 = []
@@ -308,7 +330,7 @@ plt.xlabel('Angular Separation, '+r'$\lambda / D$')
 plt.ylabel('Throughput')
 plt.legend(loc='lower right')
 plt.ylim(0,1)
-plt.xlim(0,12)
+plt.xlim(0, OWA)
 
 # get radial
 radial_profile = radial_profile(contrast_onax.get())
@@ -322,7 +344,7 @@ plt.plot(x_ticks, radial_profile, color=colors[0], label='APLC')
 # plt.vlines(3.5,0,1, color=colors[0], alpha=0.5, linestyle='solid')
 # plt.vlines(2.5,0,1, color=colors[1], alpha=0.5, linestyle='solid')
 plt.xlabel('Angular Separation, '+r'$\lambda / D$')
-plt.xlim(0,12)
+plt.xlim(0, OWA)
 plt.ylim(1e-12, 1e-5)
 plt.yscale('log')
 plt.ylabel('Normalized Intensity')

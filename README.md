@@ -1,5 +1,5 @@
 # poi
-Extensions to prysm and dygdug for wavefront sensing, coronagraph design, and post-processing. Poi is in a very early development phase and API-breaking changes may occur. 
+Extensions to prysm and dygdug for wavefront sensing, coronagraph design, and post-processing. Poi is in a very early development phase and API-breaking changes may occur.
 
 ## Features
 - Implicit Electric Field Conjugation
@@ -14,20 +14,35 @@ Poi's only dependency is on the `prysm` optical propagation package by Brandon D
 ```bash
 git clone https://github.com/Jashcraf/prysm/tree/master
 cd prysm
-pip install -e .
+git switch optym_aplc
 ```
 
 ## Installation
-Poi can be installed by cloning from source, which will install numpy, scipy, and tqdm for progress bars :D
+We recommend starting with a fresh conda environment
+```bash
+conda create -n poi python=3.10
+conda activate poi
+```
+
+Then, install `prysm` from the version we cloned earlier. After that, you can install `poi` from source as well.
 
 ```bash
+cd prysm
+pip install -e .
 git clone https://github.com/Jashcraf/poi
 cd poi
 pip install -e .
+cd ..
 ```
+
+To use GPU acceleration, you will need to install `cupy`
+```bash
+conda install -c conda-forge cupy
+```
+
 
 ## Contributions / Questions
 If you wish to contribute to Poi, or have any questions about its use, please open an issue to start a discussion. Before a pull request is made, we prefer that an issue is made to discuss the contributions at a high level.
 
 ## Acknowledgements
-Enormous gratitude to Brandon Dube for teaching me the basics of algorithmic differentiation (and writing `prysm`, which this is based on). Thanks to Kevin Derby and Kian Milani for testing components of this codebase and demonstrating some of the phase retrieval algorithms.  
+Enormous gratitude to Brandon Dube for teaching me the basics of algorithmic differentiation (and writing `prysm`, which this is based on). Thanks to Kevin Derby and Kian Milani for testing components of this codebase and demonstrating some of the phase retrieval algorithms.
