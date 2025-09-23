@@ -67,7 +67,7 @@ def lyot_mask(pupil_npix, pupil_dx, frac, obscuration_ratio=0.0):
 class Sigmoid:
     """Sigmoid(x)
     """
-    def __init__(self, a=1, x0=0, y0=0): 
+    def __init__(self, a=1, x0=0, y0=0):
         """Activation function Sigmoid(x)
 
         Parameters
@@ -82,11 +82,11 @@ class Sigmoid:
         self.a = a
         self.x0 = x0
         self.y0 = y0
-   
+
     def forward(self, x):
         x = x - self.x0
         return (1 / (1 + np.exp(-self.a * x))) + self.y0
-    
+
     def backprop(self, xbar):
         sig = self.forward(xbar) - self.y0
         return self.a * sig * (1 - sig)
@@ -166,7 +166,7 @@ class APLCOptimizer:
             output_samples=self.dh.shape,
             shift=(0, 0),
             method='mdft')
-        
+
         # apply focal plane mask
         C = B * self.fpm
 
@@ -234,7 +234,7 @@ class APLCOptimizer:
             output_samples=self.aplc.shape,
             shift=(0, 0),
             method='mdft')
-        
+
         # backprop lyot stop application
         cbar = self.ls.conj() * dbar
 
@@ -248,7 +248,7 @@ class APLCOptimizer:
             output_samples=self.I.shape, # this was self.amp
             shift=(0, 0),
             method='mdft')
-        
+
         # backprop fpm application
         Bbar = self.fpm.conj() * Cbar
 
@@ -262,7 +262,7 @@ class APLCOptimizer:
             output_samples=self.aplc.shape,
             shift=(0, 0),
             method='mdft')
-        
+
         aplcbar = np.real(bbar)
 
         if not self.zonal:
@@ -291,7 +291,7 @@ class APLCOptimizer:
         g = self.rev(x)
         f = self.E
         return f, g
-    
+
 
 class ThroughputOptimizer:
     """An apodized pupil coronagraph optimizer for throughput, pupil is real-valued and gray-scale,
@@ -303,7 +303,7 @@ class ThroughputOptimizer:
     def __init__(self, amp, wvl, basis, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float32)
-            
+
         if center_wavelength is None:
             self.c_wvl = wvl
 
@@ -324,7 +324,7 @@ class ThroughputOptimizer:
         x = np.array(x)
         if not self.zonal:
             self.aplc = np.tensordot(self.basis, x, axes=(0,0))
-        
+
         else:
             # activate
             self.aplc[self.amp_select] = x
@@ -338,7 +338,7 @@ class ThroughputOptimizer:
         I = np.abs(c)**2
         # Iinv = I**-1
         # E = np.sum(I)
-        E = - np.sum(I)
+        E = -np.sum(I)
 
         self.aplc = aplc
         self.I = I
@@ -362,7 +362,7 @@ class ThroughputOptimizer:
         # Ibar = -1 * ((self.Iinv.conj()) ** -2) * Iinvbar
         Ibar = -1 * self.I * self.eta
         cbar = 2 * Ibar * self.c
-        
+
         # backprop lyot stop application
         # bbar = self.ls.conj()[self.amp_select] * cbar
         bbar = cbar
@@ -379,7 +379,7 @@ class ThroughputOptimizer:
         if not self.zonal:
             self.abar = abar
             return self.abar
-        
+
         else:
             xbar = self.aplcbar #[self.amp_select]
             return xbar
@@ -388,7 +388,7 @@ class ThroughputOptimizer:
         g = self.rev(x)
         f = self.E
         return f, g
-    
+
 
 
 class CoreThroughputOptimizer:
@@ -399,7 +399,7 @@ class CoreThroughputOptimizer:
     def __init__(self, amp, amp_dx, efl, wvl, basis, window, dh_dx, fpm, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1):
         if initial_amplitude is None:
             aplc = np.ones(amp.shape, dtype=np.float32)
-            
+
         if center_wavelength is None:
             self.c_wvl = wvl
 
@@ -469,7 +469,7 @@ class CoreThroughputOptimizer:
         self.update(x)
         Ibar = - 2 * self.window * self.I * self.eta
         Cbar = 2 * Ibar * self.C
-        
+
         # backprop from image to lyot stop
         cbar = focus_fixed_sampling_backprop(
             wavefunction=Cbar,
@@ -480,7 +480,7 @@ class CoreThroughputOptimizer:
             output_samples=self.aplc.shape,
             shift=(0, 0),
             method='mdft')
-        
+
         # backprop lyot stop application
         bbar = self.ls.conj() * cbar
         aplcbar = np.real(bbar)
@@ -505,7 +505,7 @@ class CoreThroughputOptimizer:
         g = self.rev(x)
         f = self.E
         return f, g
-    
+
 
 # make a wrapper that calls fwd/reverse
 class APLCWrapper:
@@ -514,7 +514,7 @@ class APLCWrapper:
         """optlist is a list of APLCOptimizer2 instances"""
 
         self.optlist = optlist
-        
+
         # init f and g
         self.f = 0
         self.g = 0
@@ -525,7 +525,7 @@ class APLCWrapper:
         self.g = 0
 
     def fg(self,x):
-        
+
         # reset the f, g values
         self.refresh()
 
@@ -534,7 +534,7 @@ class APLCWrapper:
             f, g = opt.fg(x)
             self.f += f
             self.g += g
-        
+
         self.cost.append(self.f)
 
         return self.f, self.g

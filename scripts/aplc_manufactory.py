@@ -44,21 +44,22 @@ from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
-WVL = 0.650 # microns
+WVL = 0.250 # microns
 IMG_NPIX = 256 + 128
-IWA = 5
+IWA = 2.5
 OWA = 21
 AZMIN = -89 # Defines the angular extend of the dark zone
 AZMAX = 89
-BANDWIDTH = 20 # percent
-NWVLS = 3
+BANDWIDTH = 1 # percent
+NWVLS = 1
 OVERSAMPLE = 8 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 LS_FRAC = 0.85 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.15 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 20_00
+MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
-THROUGHPUT_RELATIVE_WEIGHT = 1e-10 # relative weight of the throughput optimization
+# 1e-11 produces good monochromatic designs
+THROUGHPUT_RELATIVE_WEIGHT =  1e-12 # 1e-15 # relative weight of the throughput optimization
 # ---
 
 if USE_GPU:
@@ -141,7 +142,7 @@ for wave in band:
                         wvl=wave,
                         basis=None,
                         dark_hole=dh,
-                        dh_target=1e-15, # allows for specific contrast targeting, 0 just means "make it dark pls"
+                        dh_target=0, # allows for specific contrast targeting, 0 just means "make it dark pls"
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask)
@@ -152,7 +153,7 @@ throughput = ThroughputOptimizer(amp=aperture-noisy,
                                  wvl=WVL,
                                  basis=None,
                                  ls=ls_mask,
-                                 relative_weight=THROUGHPUT_RELATIVE_WEIGHT)
+                                 relative_weight=THROUGHPUT_RELATIVE_WEIGHT * NWVLS)
 
 throughput.set_optimization_method(zonal=True)
 optlist.append(throughput)
@@ -220,47 +221,61 @@ okabe_colorblind8 = ['#000000', '#E69F00', '#56B4E9', '#009E73',
 
 def prop_coro(aplc, fpm, ls, wave=WVL, tilt=0, include_fpm=True):
 
+    # Handle passing a float
+    if isinstance(wave, float):
+        wave = [wave]
+
     pupil_npix = PUPIL_NPIX
 
     # get the tilt phase
     x = np.linspace(-0.5, 0.5, pupil_npix)
     tilt_phase = np.exp(1j * 2 * np.pi * x * tilt)
 
+    before_fpm_intensity = 0
+    before_ls_intensity = 0
+    coro_img_onax_intensity = 0
 
-    before_fpm = focus_fixed_sampling(
-                wavefunction= aplc * tilt_phase,
-                input_dx=pupil_dx,
-                prop_dist = EFL,
-                wavelength= wave,
-                output_dx= img_dx,
-                output_samples=(IMG_NPIX, IMG_NPIX),
-                shift=(0, 0),
-                method='mdft')
+    for wvl in wave:
 
-    if include_fpm:
-        before_fpm *= fpm
+        before_fpm = focus_fixed_sampling(
+                    wavefunction= aplc * tilt_phase,
+                    input_dx=pupil_dx,
+                    prop_dist = EFL,
+                    wavelength= wvl,
+                    output_dx= img_dx,
+                    output_samples=(IMG_NPIX, IMG_NPIX),
+                    shift=(0, 0),
+                    method='mdft')
 
-    before_ls = focus_fixed_sampling(
-                wavefunction=before_fpm,
-                input_dx=img_dx,
-                prop_dist = EFL,
-                wavelength= wave,
-                output_dx= pupil_dx,
-                output_samples=(pupil_npix, pupil_npix),
-                shift=(0, 0),
-                method='mdft')
+        if include_fpm:
+            before_fpm *= fpm
 
-    coro_img_onax = focus_fixed_sampling(
-                wavefunction=before_ls * ls,
-                input_dx=pupil_dx,
-                prop_dist = EFL,
-                wavelength= wave,
-                output_dx= img_dx,
-                output_samples=(IMG_NPIX, IMG_NPIX),
-                shift=(0, 0),
-                method='mdft')
+        before_ls = focus_fixed_sampling(
+                    wavefunction=before_fpm,
+                    input_dx=img_dx,
+                    prop_dist = EFL,
+                    wavelength= wvl,
+                    output_dx= pupil_dx,
+                    output_samples=(pupil_npix, pupil_npix),
+                    shift=(0, 0),
+                    method='mdft')
 
-    return before_fpm, before_ls, coro_img_onax
+        coro_img_onax = focus_fixed_sampling(
+                    wavefunction=before_ls * ls,
+                    input_dx=pupil_dx,
+                    prop_dist = EFL,
+                    wavelength= wvl,
+                    output_dx= img_dx,
+                    output_samples=(IMG_NPIX, IMG_NPIX),
+                    shift=(0, 0),
+                    method='mdft')
+
+        # accumulate intensities
+        before_fpm_intensity += np.abs(before_fpm)**2
+        before_ls_intensity += np.abs(before_ls)**2
+        coro_img_onax_intensity += np.abs(coro_img_onax)**2
+
+    return before_fpm_intensity, before_ls_intensity, coro_img_onax_intensity
 
 fx = np.linspace(-IMG_NPIX / (2 * OVERSAMPLE), IMG_NPIX / (2 * OVERSAMPLE), IMG_NPIX)
 fx, fy = np.meshgrid(fx, fx)
@@ -273,17 +288,17 @@ throughput = []
 throughput_07 = []
 
 # Get the contrast normalization
-before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=False)
-contrast_norm = (np.abs(before)**2).max()
+before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=False, wave=band)
+contrast_norm = before.max()
 
-before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=True)
-contrast_onax = np.abs(coro)**2 / contrast_norm
+before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=True, wave=band)
+contrast_onax = coro / contrast_norm
 
 for i, ld in tqdm(enumerate(tilt_lds)):
 
-    before, ls, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=ld)
-    before_I = np.sum(np.abs(before)**2)
-    coro_I = np.abs(coro)**2
+    before, ls, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=ld, wave=band)
+    before_I = np.sum(before)
+    coro_I = coro
     throughput.append(np.sum(coro_I) / np.sum(aperture))
 
     # get value in 0.7 L/D (recall 1/OS is pixelscale in L/D)
