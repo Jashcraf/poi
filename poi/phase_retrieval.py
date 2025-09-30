@@ -18,6 +18,8 @@ from prysm.x.polarization import linear_polarizer, quarter_wave_plate
 from .propagation import _angular_spectrum_prop, _angular_spectrum_transfer_function
 from .processing import mean_squared_error
 
+from warnings import warn
+
 """Largely taken from dydgug.vappid.VAPPOptimizer2, with minor modifications to support focus diversity"""
 class ADPhaseRetireval:
     def __init__(self, amp, amp_dx, efl, wvl, basis, target, img_dx, defocus_waves=0, initial_phase=None):
@@ -119,17 +121,50 @@ class ADPhaseRetireval:
         f = self.E
         self.cost.append(f)
         return f, g
-    
+
 
 class PZPhaseRetireval:
     """Class to perform jones pupil phase retrieval
 
     the shape of x should be 4 x len(basis), but minimize doesn't like that
-    so we will need to reshape
+    so we will need to reshape. This generally supports an upstream retarder and
+    downstream polarizer, but the retardance and diattenuation can be set to
+    make these an identity matrix.
+
+    Parameters
+    ----------
+    amp : numpy.ndarray
+        amplitude of the pupil function
+    amp_dx : float
+        pixel scale of the pupil function in milimeters
+    efl : float
+        effective focal length of the system in miilimeters
+    wvl : float
+        wavelength of light in microns
+    basis : numpy.ndarray
+        basis set to use for the phase (e.g. Zernikes, Hexikes, etc)
+    target : numpy.ndarray
+        target PSF intensity to fit to
+    img_dx : float
+        pixel scale of the target PSF in microns
+    defocus_waves : float, optional
+        amount of defocus diversity to use in waves, by default 0
+    retarder_angle : float, optional
+        angle of the retarder fast axis in radians, by default 0
+    polarizer_angle : float, optional
+        angle of the polarizer transmission axis in radians, by default 0
+    retardance : float, optional
+        retardance of the upstream waveplate in radians, by default np.pi/4
+    Tmin : float, optional
+        minimum transmission of the polarizer, by default 0. Related to the
+        diattenuation.
+    initial_phase : numpy.ndarray, optional
+        initial phase guess, by default None, which sets a random phase guess.
 
     """
     def __init__(self, amp, amp_dx, efl, wvl, basis, target, img_dx,
-                 defocus_waves=0, retarder_angle=0, polarizer_angle=0, initial_phase=None):
+                 defocus_waves=0, retarder_angle=0, polarizer_angle=0,
+                 retardance=np.pi/4, Tmin=0, initial_phase=None):
         if initial_phase is None:
             phs = np.zeros(amp.shape, dtype=float)
 
@@ -160,6 +195,7 @@ class PZPhaseRetireval:
         # configure polarization diversity
         self.R = quarter_wave_plate(theta=self.retarder_angle, shape=amp.shape)
         self.P = linear_polarizer(theta=self.polarizer_angle, shape=amp.shape)
+        warn("NOTE: Retardance and Diattenuation are not yet implemented in the phase retrieval.")
 
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
@@ -253,7 +289,7 @@ class ParallelADPhaseRetrieval:
     def refresh(self):
         self.f = 0
         self.g = 0
-    
+
     def fg(self, x):
 
         # reset the f, g values
@@ -264,7 +300,7 @@ class ParallelADPhaseRetrieval:
             f, g = opt.fg(x)
             self.f += f
             self.g += g
-        
+
         self.cost.append(self.f)
 
         return self.f, self.g
@@ -294,7 +330,7 @@ class FocusDiversePhaseRetrieval:
         phase_guess : numpy.ndarray, optional
             phase guess of the desired pupil sampling, by default None
         """
-        
+
         # catch some common mistakes
         assert len(defocus_positions) == len(dxs), f"defocus_positions and dxs should have the same length, got {len(defocus_positions)} and {len(dxs)}"
         assert (len(psflist) == len(dxs)+1) and (len(psflist) == len(defocus_positions)+1), f"psflist should be one element longer than dxs and defocus_positions, got {len(psflist)}"
@@ -316,7 +352,7 @@ class FocusDiversePhaseRetrieval:
             # Begin with a guess using the first PSF
             phase_guess = np.fft.ifftshift(phase_guess)
             self.G0 = self.absFlist[0] * np.exp(1j*phase_guess)
-            
+
             # pre-compute transfer functions, lists of kernels
             self.forward_prop = []
             self.backward_prop = []
@@ -339,7 +375,7 @@ class FocusDiversePhaseRetrieval:
         G0primeprime
             updated estimate of the image plane electric field
         """
-        
+
         for i,(fwd,rev,absF1,mse_denom) in enumerate(zip(self.forward_prop,self.backward_prop,self.absFlist[1:],self.mse_denom)):
 
             G1 = _angular_spectrum_prop(self.G0,fwd)
