@@ -8,6 +8,7 @@ from polmap import polmap, polab
 # The prysm imports
 
 # Load the pupil
+NMODES = 12
 LAMBDA_M = 550e-9
 WAVE_MAG = 100
 CGISIM_PATH = Path.home() / "Downloads/roman_preflight_proper_public_v2.0.1_python/roman_preflight_proper/preflight_data/hlc_20190210b"
@@ -18,18 +19,32 @@ roman_pupil_phase = fits.getdata(POLABS_PATH / "preflight_pol_pha.fits")
 roman_pupil_hdu = fits.open(POLABS_PATH / "preflight_pol_amp.fits")
 
 # Load the Jones pupils
-
 plt.figure()
 plt.imshow(roman_pupil, cmap="gray")
 polpth = str(POLABS_PATH / "preflight_pol")
-amp, phs = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=1)
+amp_j22, phs_j22 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=-4)
+amp_j12, phs_j12 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=-3)
+amp_j11, phs_j11 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=5)
+amp_j21, phs_j21 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=6)
 
-plt.figure()
-plt.subplot(121)
-plt.imshow(amp / roman_pupil, cmap="inferno", vmin=0.9, vmax=1)
-plt.colorbar()
-plt.subplot(122)
-plt.imshow(phs / roman_pupil, cmap="RdBu_r", vmin=-LAMBDA_M/WAVE_MAG, vmax=LAMBDA_M/WAVE_MAG)
-plt.colorbar()
+jones_pupil = np.array([
+    [amp_j11 * np.exp(1j * phs_j11), amp_j12 * np.exp(1j * phs_j12)],
+    [amp_j21 * np.exp(1j * phs_j21), amp_j22 * np.exp(1j * phs_j22)],
+])
+
+fig, ax = plt.subplots(ncols=4, nrows=2)
+for i in range(2):
+    for j in range(2):
+
+        J = jones_pupil[i, j] / roman_pupil
+        ax[i, j].imshow(np.abs(J), vmin=0.98, vmax=1, cmap="inferno")
+        ax[i, j+2].imshow(np.angle(J) / roman_pupil, vmin=-LAMBDA_M/WAVE_MAG, vmax=LAMBDA_M/WAVE_MAG, cmap="RdBu_r")
+
+
+# Init the vector phase retrieval
+x0 = np.random.random(8 * NMODES)
+
+
+
+
 plt.show()
-

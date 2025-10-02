@@ -105,6 +105,192 @@ class Dummy:
         return xbar
 
 
+class PAPLCOptimizer:
+    """An apodized pupil coronagraph optimizer, pupil is phase,
+    FPM and LS are fixed
+
+    """
+    def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx, fpm, ls,
+                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None):
+        if initial_amplitude is None:
+            aplc = np.zeros(amp.shape, dtype=np.float32)
+
+        if center_wavelength is None:
+            self.c_wvl = wvl
+
+        if activation is None:
+            self.activation = Dummy(1)
+
+        else:
+            self.activation = activation
+
+
+        self.amp = amp
+        self.amp_select = self.amp > 1e-9
+        self.amp_dx = amp_dx
+        self.efl = efl
+        self.wvl = wvl
+        self.basis = basis
+        self.dh = dark_hole
+        self.dh_dx = dh_dx
+        self.dh_target = dh_target
+        self.aplc = aplc
+        self.zonal = True
+        self.fpm = fpm
+        self.ls = ls
+        self.cost = []
+
+    def set_optimization_method(self, zonal=False):
+        self.zonal = zonal
+
+    def update(self, x):
+        x = np.array(x)
+        if not self.zonal:
+            self.phs = np.tensordot(self.basis, x, axes=(0,0))
+        else:
+            # activate
+            self.phs = np.zeros(self.amp.shape, dtype=np.float32)
+            self.phs[self.amp_select] = self.activation.forward(x)
+
+        # impose constraints
+        W = (2 * np.pi / self.wvl) * self.phs
+        b = self.amp * np.exp(1j * W)
+
+        # prop to focal plane mask
+        B = focus_fixed_sampling(
+            wavefunction=b,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.dh.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        # apply focal plane mask
+        C = B * self.fpm
+
+        # prop to lyot stop
+        c = focus_fixed_sampling(
+            wavefunction=C,
+            input_dx=self.dh_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.amp_dx,
+            output_samples=self.amp.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        # apply lyot stop
+        d = c * self.ls
+
+        # prop to image
+        D = focus_fixed_sampling(
+            wavefunction=d,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.dh.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        I = np.abs(D)**2
+        E = np.sum((I[self.dh] - self.dh_target)**2)
+
+        self.W = W
+        self.I = I
+        self.E = E
+        self.cost.append(np.mean(I[self.dh]))
+
+        # the fields
+        self.b = b
+        self.B = B
+        self.c = c
+        self.C = C
+        self.d = d
+        self.D = D
+
+        return
+
+    def fwd(self, x):
+        self.update(x)
+        return self.E
+
+    def rev(self, x):
+        self.update(x)
+        Ibar = np.zeros(self.dh.shape, dtype=np.float32)
+        Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target)
+
+        Dbar = 2 * Ibar * self.D
+
+        # backprop from image to lyot stop
+        dbar = focus_fixed_sampling_backprop(
+            wavefunction=Dbar,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.aplc.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        # backprop lyot stop application
+        cbar = self.ls.conj() * dbar
+
+        # backprop from before stop to focal plane mask
+        Cbar = focus_fixed_sampling_backprop(
+            wavefunction=cbar,
+            input_dx=self.dh_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.amp_dx,
+            output_samples=self.I.shape, # this was self.amp
+            shift=(0, 0),
+            method='mdft')
+
+        # backprop fpm application
+        Bbar = self.fpm.conj() * Cbar
+
+        # backprop from before fpm to pupil apodizer
+        bbar = focus_fixed_sampling_backprop(
+            wavefunction=Bbar,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.aplc.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        Wbar = 2 * np.pi / self.wvl * np.imag(bbar * np.conj(self.b))
+
+        if not self.zonal:
+            abar = np.tensordot(self.basis, Wbar)
+
+        self.Ibar = Ibar
+        self.bbar = bbar
+        self.Bbar = Bbar
+        self.cbar = cbar
+        self.Cbar = Cbar
+        self.dbar = dbar
+        self.Dbar = Dbar
+
+        if not self.zonal:
+            self.abar = abar
+            return self.abar
+        else:
+            xbar = Wbar[self.amp_select]
+#             xbar_neg = xbar < 0.
+#             xbar_pos = xbar >= 0.
+            abar = self.activation.backprop(xbar) #* xbar
+            return abar
+
+    def fg(self, x):
+        g = self.rev(x)
+        f = self.E
+        return f, g
+
 class APLCOptimizer:
     """An apodized pupil coronagraph optimizer, pupil is real-valued and gray-scale,
     FPM and LS are fixed

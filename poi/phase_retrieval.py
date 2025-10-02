@@ -120,18 +120,13 @@ class ADPhaseRetireval:
         self.cost.append(f)
         return f, g
     
-
 class PZPhaseRetireval:
-    """Class to perform jones pupil phase retrieval
-
-    the shape of x should be 4 x len(basis), but minimize doesn't like that
-    so we will need to reshape
-
-    """
     def __init__(self, amp, amp_dx, efl, wvl, basis, target, img_dx,
-                 defocus_waves=0, retarder_angle=0, polarizer_angle=0, initial_phase=None):
+                 defocus_waves=0, initial_phase=None, stokes=np.array([1.,0.,0.,0.])):
         if initial_phase is None:
             phs = np.zeros(amp.shape, dtype=float)
+        else:
+            phs = initial_phase
 
         self.amp = amp
         self.amp_select = self.amp > 1e-9
@@ -145,9 +140,7 @@ class PZPhaseRetireval:
         self.phs = phs
         self.zonal = False
         self.defocus = defocus_waves
-        self.retarder_angle = retarder_angle
-        self.polarizer_angle = polarizer_angle
-        self.lenbasis = len(self.basis)
+        self.stokes = stokes
 
         # configure the defocus polynomial
         x, y = make_xy_grid(amp.shape[0], diameter=self.epd)
@@ -157,40 +150,56 @@ class PZPhaseRetireval:
         self.defocus_aberration = 2 * np.pi * self.defocus_polynomial * self.defocus * self.amp
         self.cost = []
 
-        # configure polarization diversity
-        self.R = quarter_wave_plate(theta=self.retarder_angle, shape=amp.shape)
-        self.P = linear_polarizer(theta=self.polarizer_angle, shape=amp.shape)
-
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
 
     def update(self, x):
-
-        # reshape x
-        x = x.reshape([self.lenbasis, 4])
-
         if not self.zonal:
-            phs = np.tensordot(self.basis, x, axes=(0, 0))
+            
+            r_xx = x[0*NMODES : 1*NMODES]
+            r_xy = x[1*NMODES : 2*NMODES]
+            r_yx = x[2*NMODES : 3*NMODES]
+            r_yy = x[3*NMODES : 4*NMODES]
+            
+            i_xx = x[4*NMODES : 5*NMODES]
+            i_xy = x[5*NMODES : 6*NMODES]
+            i_yx = x[6*NMODES : 7*NMODES]
+            i_yy = x[7*NMODES : 8*NMODES]
 
-        else:
-            phs = np.zeros(self.amp.shape, dtype=float)
-            phs[self.amp_select] = x
-
-        W = (2 * np.pi / self.wvl) * phs
+            c_xx = r_xx + 1j*i_xx
+            c_xy = r_xy + 1j*i_xy
+            c_yx = r_yx + 1j*i_yx
+            c_yy = r_yy + 1j*i_yy
+            
+            Jxx = np.tensordot(self.basis, c_xx, axes=(0,0))
+            Jxy = np.tensordot(self.basis, c_xy, axes=(0,0))
+            Jyx = np.tensordot(self.basis, c_yx, axes=(0,0))
+            Jyy = np.tensordot(self.basis, c_yy, axes=(0,0))
+            Jones = np.array([
+                [Jxx, Jxy],
+                [Jyx, Jyy]
+            ])
+            Jones = np.moveaxis(Jones, -1, 0)
+        
+        # Apply polarization diversity with waveplate
 
         # TODO: Check if this is a minus sign instead
-        W -= self.defocus_aberration
-        g = self.amp * np.exp(1j * W)
-        k = g @ self.R
-        G = focus_fixed_sampling(
-            wavefunction=k,
-            input_dx=self.amp_dx,
-            prop_dist = self.efl,
-            wavelength=self.wvl,
-            output_dx=self.img_dx,
-            output_samples=self.D.shape,
-            shift=(0, 0),
-            method='mdft')
+        for i in range(2):
+            for j in range(2):
+
+                g = Jones[..., i, j] * np.exp(-1j * self.defocus_diversity)
+                G = focus_fixed_sampling(
+                    wavefunction=g,
+                    input_dx=self.amp_dx,
+                    prop_dist = self.efl,
+                    wavelength=self.wvl,
+                    output_dx=self.img_dx,
+                    output_samples=self.D.shape,
+                    shift=(0, 0),
+                    method='mdft')
+
+        # M = 
+
         I = np.abs(G)**2
         E = np.sum((I - self.D)**2)
         self.phs = phs
@@ -239,6 +248,7 @@ class PZPhaseRetireval:
         f = self.E
         self.cost.append(f)
         return f, g
+ 
 
 
 class ParallelADPhaseRetrieval:
