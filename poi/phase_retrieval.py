@@ -17,6 +17,15 @@ from prysm.polynomials import (
 from prysm.x.polarization import linear_polarizer, quarter_wave_plate
 from .propagation import _angular_spectrum_prop, _angular_spectrum_transfer_function
 from .processing import mean_squared_error
+from .poi_math import broadcast_kron
+
+A = np.array([
+    [1, 0, 0, 1],
+    [1, 0, 0, -1],
+    [0, 1, 1, 0],
+    [0, 1j, -1j, 0]
+    ])
+
 
 """Largely taken from dydgug.vappid.VAPPOptimizer2, with minor modifications to support focus diversity"""
 class ADPhaseRetireval:
@@ -180,7 +189,7 @@ class PZPhaseRetireval:
                 [Jyx, Jyy]
             ])
             Jones = np.moveaxis(Jones, -1, 0)
-        
+            ARM = np.zeros_like(Jones)        
         # Apply polarization diversity with waveplate
 
         # TODO: Check if this is a minus sign instead
@@ -198,12 +207,16 @@ class PZPhaseRetireval:
                     shift=(0, 0),
                     method='mdft')
 
-        # M = 
+                ARM[..., i, j] = G
+        
+        # Convert to Mueller Matrix
+        MPSM = A @ broadcast_kron(ARM, np.conj(ARM)) @ np.linalg.inv(A)
 
-        I = np.abs(G)**2
+        # Dot with stokes in
+        I = MPSM @ self.stokes
         E = np.sum((I - self.D)**2)
-        self.phs = phs
-        self.W = W
+        
+        self.ARM = ARM
         self.g = g
         self.G = G
         self.I = I
@@ -217,17 +230,44 @@ class PZPhaseRetireval:
     def rev(self, x):
         self.update(x)
         Ibar = 2*(self.I - self.D)
-        Gbar = 2 * Ibar * self.G
-        gbar = focus_fixed_sampling_backprop(
-            wavefunction=Gbar,
-            input_dx=self.amp_dx,
-            prop_dist = self.efl,
-            wavelength=self.wvl,
-            output_dx=self.img_dx,
-            output_samples=self.phs.shape,
-            shift=(0, 0),
-            method='mdft')
 
+        Mbar = Ibar * self.stokes
+        
+        # Construct the gradient backpropagation matrix from the ARM
+        A11 = self.ARM[..., 0, 0].conj()
+        A12 = self.ARM[..., 0, 1].conj()
+        A21 = self.ARM[..., 1, 0].conj()
+        A22 = self.ARM[..., 1, 1].conj()
+        
+        # TODO: Check on the shape of Abar
+        Abar = np.array([
+            [A11, A11, A12, -1j * A12],
+            [A12, -A12, A11, 1j * A11],
+            [A21, A21, A22, -1j * A22],
+            [A22, -A22, A12, 1j * A12]
+        ])
+
+        vec_Jbar = Abar @ Mbar
+        Jbar = vec_Jbar.reshape([*vec_Jbar.shape[:-1], 2, 2])
+        hbar = np.zeros_like(Jbar)
+
+        for i in range(2):
+            for j in range(2):
+                
+                Gbar = Jbar[..., i, j]
+
+                gbar = focus_fixed_sampling_backprop(
+                    wavefunction=Gbar,
+                    input_dx=self.amp_dx,
+                    prop_dist = self.efl,
+                    wavelength=self.wvl,
+                    output_dx=self.img_dx,
+                    output_samples=self.phs.shape,
+                    shift=(0, 0),
+                    method='mdft')
+                
+                hbar[..., i, j] = gbar * self.amp
+        
         Wbar = 2 * np.pi / self.wvl * np.imag(gbar * np.conj(self.g))
         if not self.zonal:
             abar = np.tensordot(self.basis, Wbar)
