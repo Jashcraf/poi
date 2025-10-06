@@ -15,6 +15,7 @@ from astropy.io import fits
 from pathlib import Path
 import time
 import numpy as tnp
+import ipdb
 
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
@@ -51,12 +52,12 @@ OWA = 20
 AZMIN = -89 # Defines the angular extend of the dark zone
 AZMAX = 89
 BANDWIDTH = 10 # percent
-NWVLS = 3
+NWVLS = 5
 OVERSAMPLE = 8 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 LS_FRAC = 0.85 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.0 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 1_000
+MAX_ITERS = 10_000
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
 THROUGHPUT_RELATIVE_WEIGHT =  1e-10 # 1e-15 # relative weight of the throughput optimization
@@ -138,6 +139,7 @@ else:
 # Break hermetian symmetry with a little bit of random noise
 noisy = np.random.random(aperture.shape) * aperture / 1000
 optlist = []
+core_window = circular_mask(iss, 0.35)
 for wave in band:
     aplc = PAPLCOptimizer(amp = aperture,
                         amp_dx=pupil_dx,
@@ -153,20 +155,20 @@ for wave in band:
     optlist.append(aplc)
 
 
-core_window = circular_mask(iss, 0.7)
-throughput = CoreThroughputOptimizer(amp=aperture,
-                                 amp_dx=pupil_dx,
-                                 efl=EFL,
-                                 wvl=WVL,
-                                 basis=None,
-                                 window=(1-core_window), 
-                                 dh_dx=img_dx,
-                                 fpm=focal_plane_mask,
-                                 ls=ls_mask,
-                                 relative_weight=THROUGHPUT_RELATIVE_WEIGHT * NWVLS)
+    throughput = CoreThroughputOptimizer(amp=aperture,
+                                     amp_dx=pupil_dx,
+                                     efl=EFL,
+                                     wvl=wave,
+                                     basis=None,
+                                     window=(1-core_window), 
+                                     dh_dx=img_dx,
+                                     fpm=focal_plane_mask,
+                                     ls=ls_mask,
+                                     relative_weight=THROUGHPUT_RELATIVE_WEIGHT)
 
-throughput.set_optimization_method(zonal=True)
-optlist.append(throughput)
+    throughput.set_optimization_method(zonal=True)
+    optlist.append(throughput)
+
 
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
@@ -181,7 +183,9 @@ x0 /= 100
 opt_contrast_throughput.fg(x0)
 
 # initialize the optimizer with box constraints
-opt = F77LBFGSB(opt_contrast_throughput.fg, x0, memory=5)
+opt = F77LBFGSB(opt_contrast_throughput.fg, x0, memory=5,
+                upper_bounds=tnp.ones(x0.shape),
+                lower_bounds=-tnp.ones(x0.shape))
 opt.iprint = 0
 
 # some timing
