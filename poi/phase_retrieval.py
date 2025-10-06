@@ -17,6 +17,15 @@ from prysm.polynomials import (
 from prysm.x.polarization import linear_polarizer, quarter_wave_plate
 from .propagation import _angular_spectrum_prop, _angular_spectrum_transfer_function
 from .processing import mean_squared_error
+from .poi_math import broadcast_kron
+
+A = np.array([
+    [1, 0, 0, 1],
+    [1, 0, 0, -1],
+    [0, 1, 1, 0],
+    [0, 1j, -1j, 0]
+    ])
+
 
 """Largely taken from dydgug.vappid.VAPPOptimizer2, with minor modifications to support focus diversity"""
 class ADPhaseRetireval:
@@ -180,7 +189,7 @@ class PZPhaseRetireval:
                 [Jyx, Jyy]
             ])
             Jones = np.moveaxis(Jones, -1, 0)
-        
+            ARM = np.zeros_like(Jones)        
         # Apply polarization diversity with waveplate
 
         # TODO: Check if this is a minus sign instead
@@ -198,12 +207,15 @@ class PZPhaseRetireval:
                     shift=(0, 0),
                     method='mdft')
 
-        # M = 
+                ARM[..., i, j] = G
+        
+        # Convert to Mueller Matrix
+        MPSM = A @ broadcast_kron(ARM, np.conj(ARM)) @ np.linalg.inv(A)
 
-        I = np.abs(G)**2
+        # Dot with stokes in
+        I = MPSM @ self.stokes
         E = np.sum((I - self.D)**2)
-        self.phs = phs
-        self.W = W
+        
         self.g = g
         self.G = G
         self.I = I
@@ -217,6 +229,9 @@ class PZPhaseRetireval:
     def rev(self, x):
         self.update(x)
         Ibar = 2*(self.I - self.D)
+
+        Sbar = Ibar * self.stokes
+
         Gbar = 2 * Ibar * self.G
         gbar = focus_fixed_sampling_backprop(
             wavefunction=Gbar,
