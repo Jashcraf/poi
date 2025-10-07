@@ -10,7 +10,7 @@ from scipy.optimize import minimize
 
 # The prysm imports
 from prysm.coordinates import make_xy_grid, cart_to_polar
-from prysm.polynomials import noll_to_nm, zernike_nm_seq as zernike_nm_sequence
+from prysm.polynomials import noll_to_nm, hopkins, zernike_nm_seq as zernike_nm_sequence
 from prysm.propagation import focus_fixed_sampling
 
 # Pound the poi
@@ -51,21 +51,42 @@ for i in range(2):
 # Convert to prysm-friendly units
 LAMBDA_M *= 1e6
 
-# Construct the PSF
-image = 0
-for i in range(2):
-    for j in range(2):
-        
-        psf = focus_fixed_sampling(
-                wavefunction=jones_pupil[i, j] * roman_pupil,
-                input_dx=2400/jones_pupil[i, j].shape[0],
-                prop_dist=20e3,
-                wavelength=LAMBDA_M,
-                output_dx=IMG_DX,
-                output_samples=128
-            )
+# Set up the defocus polynomial
+def create_defocus_aberration(defocus_waves, Npup=amp_j11.shape[0]):
 
-        image += np.abs(psf)**2
+    x, y = make_xy_grid(Npup, diameter=2400)
+    r, t = cart_to_polar(x, y)
+    r_z = r / (2400 / 2)
+    defocus_polynomial = hopkins(0, 2, 0, r_z, t, 0)
+    defocus_aberration = 2 * np.pi * defocus_polynomial * defocus_waves
+
+    return defocus_aberration
+
+# Construct the PSF
+defocused_images = []
+defocus_waves = [0, 5]
+for defocus in defocus_waves:
+    
+    defocus_phase = create_defocus_aberration(defocus)
+    defocus_phasor = np.exp(1j * defocus_phase)
+    image = 0
+    
+    for i in range(2):
+        for j in range(2):
+
+            psf = focus_fixed_sampling(
+                    wavefunction=jones_pupil[i, j] * roman_pupil * defocus_phasor,
+                    input_dx=2400/jones_pupil[i, j].shape[0],
+                    prop_dist=20e3,
+                    wavelength=LAMBDA_M,
+                    output_dx=IMG_DX,
+                    output_samples=256
+                )
+
+            image += np.abs(psf)**2
+
+    defocused_images.append(image)
+
 # Init the vector phase retrieval
 x0 = np.random.random(8 * NMODES) / 100
 
@@ -78,35 +99,36 @@ basis = list(zernike_nm_sequence(nms, r, t))
 masked_basis = [b * roman_pupil for b in basis]
 
 polarizer_angles = [0, 45, 90, 135]
-defocus_waves = [0, 3]
+stokes_q = [0]
 optlist = []
 
-for polang in polarizer_angles:
-    for defocus in defocus_waves:
+for q in stokes_q:
+    for polang in polarizer_angles:
+        for defocus, defocused_image in zip(defocus_waves, defocused_images):
 
-        pzad = PZPhaseRetrieval(
-            amp=roman_pupil,
-            amp_dx=2400 / roman_pupil.shape[0],
-            efl=20e3, # TODO: Check this
-            wvl=LAMBDA_M,
-            basis=basis,
-            target=image,
-            img_dx=IMG_DX,
-            defocus_waves=defocus,
-            initial_phase=None,
-            stokes=np.array([1., 0., 0., 0.]),
-            waveplate_angle=45,
-            polarizer_angle=polang
-        )
+            pzad = PZPhaseRetrieval(
+                amp=roman_pupil,
+                amp_dx=2400 / roman_pupil.shape[0],
+                efl=20e3, # TODO: Check this
+                wvl=LAMBDA_M,
+                basis=basis,
+                target=defocused_image,
+                img_dx=IMG_DX,
+                defocus_waves=-defocus,
+                initial_phase=None,
+                stokes=np.array([1., q, 0., 0.]),
+                waveplate_angle=0,
+                polarizer_angle=polang
+            )
 
-        optlist.append(pzad)
+            optlist.append(pzad)
 
 pzad_list = ParallelADPhaseRetrieval(optlist)
 
 f, g = pzad.fg(x0)
-tol = 1e-40
+tol = 1e-50
 results = minimize(pzad_list.fg, x0, jac=True, method="L-BFGS-B",
-                   options={"maxiters": 1000, "ftol":tol, "gtol":tol})
+                   options={"maxiter": 100, "ftol":tol, "gtol":tol})
 print(results)
 
 # Construct Jones pupil from results
@@ -134,6 +156,8 @@ Jones_result = np.array([
     [Jyx, Jyy]
 ])
 
+f, g = pzad_list.fg(results.x)
+
 fig, ax = plt.subplots(ncols=4, nrows=2)
 fig.suptitle("Retrieved Jones Pupil")
 for i in range(2):
@@ -150,14 +174,22 @@ for i in range(2):
         cax = div.append_axes("right", size="7%", pad="2%")
         fig.colorbar(im, cax=cax)
 
-plt.figure(figsize=[10, 5])
-plt.subplot(121)
-plt.title("Reference PSF")
-plt.imshow(image, norm=LogNorm())
-plt.colorbar()
-plt.subplot(122)
-plt.title("Model PSF")
-plt.imshow(pzad.E, norm=LogNorm())
-plt.colorbar()
+for idx in [0, -1]:
+    plt.figure(figsize=[10, 5])
+    plt.subplot(121)
+    plt.title("Reference PSF")
+    plt.imshow(pzad_list.optlist[idx].D, norm=LogNorm())
+    plt.colorbar()
+    plt.subplot(122)
+    plt.title("Model PSF")
+    plt.imshow(pzad_list.optlist[idx].E, norm=LogNorm())
+    plt.colorbar()
 
+plt.figure()
+for opt in pzad_list.optlist:
+    plt.plot(opt.cost, label=f"pol={opt.polarizer_angle}, defocus={opt.defocus}")
+
+plt.ylabel("Mean Squared Error")
+plt.xlabel("Iteration")
+plt.yscale("log")
 plt.show()

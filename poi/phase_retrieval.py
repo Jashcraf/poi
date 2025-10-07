@@ -185,7 +185,11 @@ class PZPhaseRetrieval:
         self.stokes = stokes
         self.waveplate_angle = np.radians(waveplate_angle)
         self.polarizer_angle = np.radians(polarizer_angle)
-        self.waveplate = quarter_wave_plate(theta=self.waveplate_angle)
+        #self.waveplate = quarter_wave_plate(theta=self.waveplate_angle)
+        self.waveplate = np.array([
+            [1., 0.],
+            [0., 1.]
+        ])
         self.polarizer = linear_polarizer(theta=self.polarizer_angle)
         self.NMODES = len(basis)
 
