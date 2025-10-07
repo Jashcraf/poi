@@ -13,7 +13,7 @@ from prysm.coordinates import (
 from prysm.polynomials import (
     hopkins
 )
-
+import ipdb
 from prysm.x.polarization import linear_polarizer, quarter_wave_plate
 from .propagation import _angular_spectrum_prop, _angular_spectrum_transfer_function
 from .processing import mean_squared_error
@@ -230,11 +230,11 @@ class PZPhaseRetrieval:
                 [Jyx, Jyy]
             ])
             e = np.moveaxis(e, -1, 0)
-            ARM = np.zeros_like(e)        
-        
+            e = np.moveaxis(e, -1, 0)
+            ARM = np.zeros([*self.D.shape, 2, 2], dtype=np.complex128) 
+             
         # Apply polarization diversity with waveplate
         f = self.waveplate @ e 
-        
         # TODO: Check if this is a minus sign instead
         for l in range(2):
             for m in range(2):
@@ -253,21 +253,22 @@ class PZPhaseRetrieval:
                     shift=(0, 0),
                     method='mdft')
 
-                ARM[..., i, j] = I
+                ARM[..., l, m] = I
         
         # Apply polarization diversity with polarizer
         J = self.polarizer @ ARM
 
         # Convert to Mueller Matrix
         M = U @ broadcast_kron(J, np.conj(J)) @ np.linalg.inv(U)
+        M = np.real(M)
 
         # Dot with stokes in
         E = M @ self.stokes
-        loss = np.sum((I - self.D)**2)
+        E = E[..., 0]
+        loss = np.sum(np.abs(E - self.D)**2)
         
         self.ARM = ARM
         self.g = g
-        self.G = G
         self.I = I
         self.E = E
         self.loss = loss
@@ -279,10 +280,9 @@ class PZPhaseRetrieval:
 
     def rev(self, x):
         self.update(x)
-        Ebar = 2*(self.I - self.D)
+        Ebar = 2*(self.E - self.D)
+        Mbar = Ebar[..., None] * self.stokes
 
-        Mbar = Ibar * self.stokes
-        
         # Construct the gradient backpropagation matrix from the ARM
         A11 = self.ARM[..., 0, 0].conj()
         A12 = self.ARM[..., 0, 1].conj()
@@ -296,13 +296,15 @@ class PZPhaseRetrieval:
             [A21, A21, A22, -1j * A22],
             [A22, -A22, A12, 1j * A12]
         ])
-        print(f"Shape of Abar = {Abar.shape}")
-        ipdb.set_trace()
 
-        vec_Jbar = Abar @ Mbar
+        Abar = np.moveaxis(Abar, -1, 0)
+        Abar = np.moveaxis(Abar, -1, 0)
+
+        vec_Jbar = Abar @ Mbar[..., None]
+        vec_Jbar = vec_Jbar[..., 0]
         Jbar = vec_Jbar.reshape([*vec_Jbar.shape[:-1], 2, 2])
-        Ibar = Jbar @ self.polarizer.H
-        fbar = np.zeros_like(Ibar)
+        Ibar = Jbar @ self.polarizer.conj().T
+        fbar = np.zeros([*self.amp.shape, 2, 2], dtype=np.complex128)
 
         for i in range(2):
             for j in range(2):
@@ -321,7 +323,7 @@ class PZPhaseRetrieval:
                 
                 fbar[..., i, j] = gbar * self.amp
         
-        ebar = fbar @ self.waveplate.H
+        ebar = fbar @ self.waveplate.conj().T
         
         # Dot ebar into the basis to get coefficients
         if not self.zonal:
@@ -329,6 +331,7 @@ class PZPhaseRetrieval:
             dbar_xy = np.tensordot(self.basis, ebar[..., 0, 1])
             dbar_yx = np.tensordot(self.basis, ebar[..., 1, 0])
             dbar_yy = np.tensordot(self.basis, ebar[..., 1, 1])
+
         else:
             dbar_xx = ebar[..., 0, 0]
             dbar_xy = ebar[..., 0, 1]
@@ -351,7 +354,6 @@ class PZPhaseRetrieval:
                                cbar_xx, cbar_xy, cbar_yx, cbar_yy])
 
         self.Ibar = Ibar
-        self.Gbar = Gbar
         self.gbar = gbar
         
         # Return coefficients of modes
