@@ -6,7 +6,6 @@ from matplotlib.colors import LogNorm
 from pathlib import Path
 import ipdb
 from polmap import polmap, polab
-from poi.phase_retrieval import PZPhaseRetrieval
 from scipy.optimize import minimize
 
 # The prysm imports
@@ -14,8 +13,11 @@ from prysm.coordinates import make_xy_grid, cart_to_polar
 from prysm.polynomials import noll_to_nm, zernike_nm_seq as zernike_nm_sequence
 from prysm.propagation import focus_fixed_sampling
 
+# Pound the poi
+from poi.phase_retrieval import PZPhaseRetrieval, ParallelADPhaseRetrieval
+
 # Load the pupil
-NMODES = 128
+NMODES = 37
 LAMBDA_M = 550e-9
 WAVE_MAG = 100
 IMG_DX = 1 
@@ -75,24 +77,35 @@ nms = [noll_to_nm(i) for i in range(1, NMODES+1)]
 basis = list(zernike_nm_sequence(nms, r, t))
 masked_basis = [b * roman_pupil for b in basis]
 
-pzad = PZPhaseRetrieval(
-    amp=roman_pupil,
-    amp_dx=2400 / roman_pupil.shape[0],
-    efl=20e3, # TODO: Check this
-    wvl=LAMBDA_M,
-    basis=basis,
-    target=image,
-    img_dx=IMG_DX,
-    defocus_waves=0,
-    initial_phase=None,
-    stokes=np.array([1., 0., 0., 0.]),
-    waveplate_angle=45,
-    polarizer_angle=90
-)
+polarizer_angles = [0, 45, 90, 135]
+defocus_waves = [0, 3]
+optlist = []
+
+for polang in polarizer_angles:
+    for defocus in defocus_waves:
+
+        pzad = PZPhaseRetrieval(
+            amp=roman_pupil,
+            amp_dx=2400 / roman_pupil.shape[0],
+            efl=20e3, # TODO: Check this
+            wvl=LAMBDA_M,
+            basis=basis,
+            target=image,
+            img_dx=IMG_DX,
+            defocus_waves=defocus,
+            initial_phase=None,
+            stokes=np.array([1., 0., 0., 0.]),
+            waveplate_angle=45,
+            polarizer_angle=polang
+        )
+
+        optlist.append(pzad)
+
+pzad_list = ParallelADPhaseRetrieval(optlist)
 
 f, g = pzad.fg(x0)
 tol = 1e-40
-results = minimize(pzad.fg, x0, jac=True, method="L-BFGS-B",
+results = minimize(pzad_list.fg, x0, jac=True, method="L-BFGS-B",
                    options={"maxiters": 1000, "ftol":tol, "gtol":tol})
 print(results)
 
