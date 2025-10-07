@@ -19,7 +19,7 @@ from .propagation import _angular_spectrum_prop, _angular_spectrum_transfer_func
 from .processing import mean_squared_error
 from .poi_math import broadcast_kron
 
-A = np.array([
+U = np.array([
     [1, 0, 0, 1],
     [1, 0, 0, -1],
     [0, 1, 1, 0],
@@ -129,9 +129,42 @@ class ADPhaseRetireval:
         self.cost.append(f)
         return f, g
     
-class PZPhaseRetireval:
+class PZPhaseRetrieval:
     def __init__(self, amp, amp_dx, efl, wvl, basis, target, img_dx,
-                 defocus_waves=0, initial_phase=None, stokes=np.array([1.,0.,0.,0.])):
+                 defocus_waves=0, initial_phase=None, stokes=np.array([1.,0.,0.,0.]),
+                 waveplate_angle=0, polarizer_angle=0):
+        """
+        Phase retrieval with simultaneous focus and polarization diversity.
+        The polarization diversity is achieved by a rotating quarter waveplate in the pupil,
+        and a rotating polarizer in the focal plane. 
+
+        TODO: Add support for non-ideal polarization elements
+
+        Parameters
+        ----------
+        amp: ndarray
+            2D array containing the telescope aperture
+        amp_dx: float
+            spacing of samples in the pupil, milimeters
+        efl: float
+            Effective focal length, milimeters
+        wvl: float
+            Wavelength of light, microns
+        basis: list of ndarrays
+            Spatial modes in the entrance pupil to decompose aberrations
+        img_dx: float
+            spacing of samples in the focal plane, microns
+        defocus_waves: float
+            Amount of defocus to apply in units of waves, defaults to 0
+        initial_phase: ndarray
+            Initial phase estimate to apply to the Jones pupil, defaults to None
+        stokes: ndarray
+            Stokes vector representing the source, defaults to an unpolarized source
+        waveplate_angle: float
+            Angle of the quarter-wave plate in degrees
+        polarizer_angle: float
+            Angle of the linear polarizer in degrees
+        """
         if initial_phase is None:
             phs = np.zeros(amp.shape, dtype=float)
         else:
@@ -150,6 +183,11 @@ class PZPhaseRetireval:
         self.zonal = False
         self.defocus = defocus_waves
         self.stokes = stokes
+        self.waveplate_angle = np.radians(waveplate_angle)
+        self.polarizer_angle = np.radians(polarizer_angle)
+        self.waveplate = quarter_wave_plate(theta=self.waveplate_angle)
+        self.polarizer = linear_polarizer(theta=self.polarizer_angle)
+        self.NMODES = len(basis)
 
         # configure the defocus polynomial
         x, y = make_xy_grid(amp.shape[0], diameter=self.epd)
@@ -164,7 +202,8 @@ class PZPhaseRetireval:
 
     def update(self, x):
         if not self.zonal:
-            
+            NMODES = self.NMODES
+            # Parameter extraction
             r_xx = x[0*NMODES : 1*NMODES]
             r_xy = x[1*NMODES : 2*NMODES]
             r_yx = x[2*NMODES : 3*NMODES]
@@ -174,30 +213,37 @@ class PZPhaseRetireval:
             i_xy = x[5*NMODES : 6*NMODES]
             i_yx = x[6*NMODES : 7*NMODES]
             i_yy = x[7*NMODES : 8*NMODES]
-
+            
+            # Construction of complex coefficients
             c_xx = r_xx + 1j*i_xx
             c_xy = r_xy + 1j*i_xy
             c_yx = r_yx + 1j*i_yx
             c_yy = r_yy + 1j*i_yy
             
+            # Basis expansion
             Jxx = np.tensordot(self.basis, c_xx, axes=(0,0))
             Jxy = np.tensordot(self.basis, c_xy, axes=(0,0))
             Jyx = np.tensordot(self.basis, c_yx, axes=(0,0))
             Jyy = np.tensordot(self.basis, c_yy, axes=(0,0))
-            Jones = np.array([
+            e = np.array([
                 [Jxx, Jxy],
                 [Jyx, Jyy]
             ])
-            Jones = np.moveaxis(Jones, -1, 0)
-            ARM = np.zeros_like(Jones)        
+            e = np.moveaxis(e, -1, 0)
+            ARM = np.zeros_like(e)        
+        
         # Apply polarization diversity with waveplate
-
+        f = self.waveplate @ e 
+        
         # TODO: Check if this is a minus sign instead
-        for i in range(2):
-            for j in range(2):
+        for l in range(2):
+            for m in range(2):
+                
+                # Apply defocus diversity to each element
+                f_select = f[..., l, m] * np.exp(-1j * self.defocus_aberration)
+                g = f_select * self.amp
 
-                g = Jones[..., i, j] * np.exp(-1j * self.defocus_diversity)
-                G = focus_fixed_sampling(
+                I = focus_fixed_sampling(
                     wavefunction=g,
                     input_dx=self.amp_dx,
                     prop_dist = self.efl,
@@ -207,29 +253,33 @@ class PZPhaseRetireval:
                     shift=(0, 0),
                     method='mdft')
 
-                ARM[..., i, j] = G
+                ARM[..., i, j] = I
         
+        # Apply polarization diversity with polarizer
+        J = self.polarizer @ ARM
+
         # Convert to Mueller Matrix
-        MPSM = A @ broadcast_kron(ARM, np.conj(ARM)) @ np.linalg.inv(A)
+        M = U @ broadcast_kron(J, np.conj(J)) @ np.linalg.inv(U)
 
         # Dot with stokes in
-        I = MPSM @ self.stokes
-        E = np.sum((I - self.D)**2)
+        E = M @ self.stokes
+        loss = np.sum((I - self.D)**2)
         
         self.ARM = ARM
         self.g = g
         self.G = G
         self.I = I
         self.E = E
+        self.loss = loss
         return
 
     def fwd(self, x):
         self.update(x)
-        return self.E
+        return self.loss
 
     def rev(self, x):
         self.update(x)
-        Ibar = 2*(self.I - self.D)
+        Ebar = 2*(self.I - self.D)
 
         Mbar = Ibar * self.stokes
         
@@ -246,18 +296,21 @@ class PZPhaseRetireval:
             [A21, A21, A22, -1j * A22],
             [A22, -A22, A12, 1j * A12]
         ])
+        print(f"Shape of Abar = {Abar.shape}")
+        ipdb.set_trace()
 
         vec_Jbar = Abar @ Mbar
         Jbar = vec_Jbar.reshape([*vec_Jbar.shape[:-1], 2, 2])
-        hbar = np.zeros_like(Jbar)
+        Ibar = Jbar @ self.polarizer.H
+        fbar = np.zeros_like(Ibar)
 
         for i in range(2):
             for j in range(2):
                 
-                Gbar = Jbar[..., i, j]
+                Ibar_select = Ibar[..., i, j]
 
                 gbar = focus_fixed_sampling_backprop(
-                    wavefunction=Gbar,
+                    wavefunction=Ibar_select,
                     input_dx=self.amp_dx,
                     prop_dist = self.efl,
                     wavelength=self.wvl,
@@ -266,26 +319,53 @@ class PZPhaseRetireval:
                     shift=(0, 0),
                     method='mdft')
                 
-                hbar[..., i, j] = gbar * self.amp
+                fbar[..., i, j] = gbar * self.amp
         
-        Wbar = 2 * np.pi / self.wvl * np.imag(gbar * np.conj(self.g))
+        ebar = fbar @ self.waveplate.H
+        
+        # Dot ebar into the basis to get coefficients
         if not self.zonal:
-            abar = np.tensordot(self.basis, Wbar)
+            dbar_xx = np.tensordot(self.basis, ebar[..., 0, 0])
+            dbar_xy = np.tensordot(self.basis, ebar[..., 0, 1])
+            dbar_yx = np.tensordot(self.basis, ebar[..., 1, 0])
+            dbar_yy = np.tensordot(self.basis, ebar[..., 1, 1])
+        else:
+            dbar_xx = ebar[..., 0, 0]
+            dbar_xy = ebar[..., 0, 1]
+            dbar_yx = ebar[..., 1, 0]
+            dbar_yy = ebar[..., 1, 1]
+        
+        # extract real/imag coefficients
+        bbar_xx = dbar_xx.real
+        bbar_xy = dbar_xy.real
+        bbar_yx = dbar_yx.real
+        bbar_yy = dbar_yy.real
+        
+        cbar_xx = dbar_xx.imag
+        cbar_xy = dbar_xy.imag
+        cbar_yx = dbar_yx.imag 
+        cbar_yy = dbar_yy.imag
+        
+        # Pack gradients
+        abar = np.concatenate([bbar_xx, bbar_xy, bbar_yx, bbar_yy,
+                               cbar_xx, cbar_xy, cbar_yx, cbar_yy])
 
         self.Ibar = Ibar
         self.Gbar = Gbar
         self.gbar = gbar
-        self.Wbar = Wbar
-
+        
+        # Return coefficients of modes
         if not self.zonal:
             self.abar = abar
             return self.abar
+
+        # Return element-wise results
         else:
-            return self.Wbar[self.amp_select]
+            return self.abar[self.amp_select]
 
     def fg(self, x):
         g = self.rev(x)
-        f = self.E
+        f = self.loss
         self.cost.append(f)
         return f, g
  

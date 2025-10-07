@@ -4,8 +4,11 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import ipdb
 from polmap import polmap, polab
+from poi.phase_retrieval import PZPhaseRetrieval
 
 # The prysm imports
+from prysm.coordinates import make_xy_grid, cart_to_polar
+from prysm.polynomials import noll_to_nm, zernike_nm_seq as zernike_nm_sequence
 
 # Load the pupil
 NMODES = 12
@@ -44,7 +47,30 @@ for i in range(2):
 # Init the vector phase retrieval
 x0 = np.random.random(8 * NMODES)
 
+# Construct a Zernike basis
+x, y = make_xy_grid(roman_pupil.shape, diameter=2)
+r, t = cart_to_polar(x, y)
 
+nms = [noll_to_nm(i) for i in range(1, NMODES+1)]
+basis = list(zernike_nm_sequence(nms, r, t))
+masked_basis = [b * roman_pupil for b in basis]
+
+pzad = PZPhaseRetrieval(
+    amp=roman_pupil,
+    amp_dx=roman_pupil.shape[0] / 2.4,
+    efl=20e3, # TODO: Check this
+    wvl=0.55,
+    basis=basis,
+    target=0,
+    img_dx=1,
+    defocus_waves=0,
+    initial_phase=None,
+    stokes=np.array([1., 0., 0., 0.]),
+    waveplate_angle=45,
+    polarizer_angle=90
+)
+
+f, g = pzad.fg(x0)
 
 
 plt.show()
