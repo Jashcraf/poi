@@ -12,6 +12,7 @@ from scipy.optimize import minimize
 from prysm.coordinates import make_xy_grid, cart_to_polar
 from prysm.polynomials import noll_to_nm, hopkins, zernike_nm_seq as zernike_nm_sequence
 from prysm.propagation import focus_fixed_sampling
+from prysm.x.polarization import linear_polarizer, jones_to_mueller
 
 # Pound the poi
 from poi.phase_retrieval import PZPhaseRetrieval, ParallelADPhaseRetrieval
@@ -20,7 +21,8 @@ from poi.phase_retrieval import PZPhaseRetrieval, ParallelADPhaseRetrieval
 NMODES = 37
 LAMBDA_M = 550e-9
 WAVE_MAG = 100
-IMG_DX = 1 
+IMG_DX = 1
+IMG_NPIX = 256
 CGISIM_PATH = Path.home() / "Downloads/roman_preflight_proper_public_v2.0.1_python/roman_preflight_proper/preflight_data/hlc_20190210b"
 POLABS_PATH = Path.home() / "Downloads/roman_preflight_proper_public_v2.0.1_python/roman_preflight_proper/preflight_data/pol"
 roman_pupil = fits.getdata(CGISIM_PATH / "pupil.fits")
@@ -35,9 +37,11 @@ amp_j12, phs_j12 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=-3)
 amp_j11, phs_j11 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=5)
 amp_j21, phs_j21 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=6)
 
+PHASE_SCALE = 1e2 
+
 jones_pupil = np.array([
-    [amp_j11 * np.exp(1j * phs_j11), amp_j12 * np.exp(1j * phs_j12)],
-    [amp_j21 * np.exp(1j * phs_j21), amp_j22 * np.exp(1j * phs_j22)],
+    [amp_j11 * np.exp(1j * phs_j11*PHASE_SCALE), amp_j12 * np.exp(1j * phs_j12 * PHASE_SCALE)],
+    [amp_j21 * np.exp(1j * phs_j21*PHASE_SCALE), amp_j22 * np.exp(1j * phs_j22 * PHASE_SCALE)],
 ])
 
 fig, ax = plt.subplots(ncols=4, nrows=2)
@@ -63,29 +67,6 @@ def create_defocus_aberration(defocus_waves, Npup=amp_j11.shape[0]):
     return defocus_aberration
 
 # Construct the PSF
-defocused_images = []
-defocus_waves = [0, 5]
-for defocus in defocus_waves:
-    
-    defocus_phase = create_defocus_aberration(defocus)
-    defocus_phasor = np.exp(1j * defocus_phase)
-    image = 0
-    
-    for i in range(2):
-        for j in range(2):
-
-            psf = focus_fixed_sampling(
-                    wavefunction=jones_pupil[i, j] * roman_pupil * defocus_phasor,
-                    input_dx=2400/jones_pupil[i, j].shape[0],
-                    prop_dist=20e3,
-                    wavelength=LAMBDA_M,
-                    output_dx=IMG_DX,
-                    output_samples=256
-                )
-
-            image += np.abs(psf)**2
-
-    defocused_images.append(image)
 
 # Init the vector phase retrieval
 x0 = np.random.random(8 * NMODES) / 100
@@ -98,25 +79,66 @@ nms = [noll_to_nm(i) for i in range(1, NMODES+1)]
 basis = list(zernike_nm_sequence(nms, r, t))
 masked_basis = [b * roman_pupil for b in basis]
 
-polarizer_angles = [0, 45, 90, 135]
-stokes_q = [0]
+defocus_waves = [0, 5]
+polarizer_angles = [0]
+stokes_vectors = [
+    np.array([1, 0, 0, 0])
+]
 optlist = []
-
-for q in stokes_q:
+defocused_images = []
+for stokes in stokes_vectors:
     for polang in polarizer_angles:
-        for defocus, defocused_image in zip(defocus_waves, defocused_images):
+        for defocus in defocus_waves:
+            
+            # Construct the defocus aberration 
+            defocus_phase = create_defocus_aberration(defocus)
+            defocus_phasor = np.exp(1j * defocus_phase)
 
+            # Construct the polarizer
+            pol = linear_polarizer(theta=np.radians(polang))
+
+            
+            # Init image
+            amplitude_response_mat = np.zeros([IMG_NPIX, IMG_NPIX, 2, 2], dtype=np.complex128)
+            
+            # Generate amplitude response matrix
+            for i in range(2):
+                for j in range(2):
+
+                    psf = focus_fixed_sampling(
+                            wavefunction=jones_pupil[i, j] * roman_pupil * defocus_phasor,
+                            input_dx=2400/jones_pupil[i, j].shape[0],
+                            prop_dist=20e3,
+                            wavelength=LAMBDA_M,
+                            output_dx=IMG_DX,
+                            output_samples=IMG_NPIX
+                        )
+
+                    amplitude_response_mat[..., i, j] = psf
+            
+            # Multiply by polarizer
+            amplitude_response_mat = pol @ amplitude_response_mat
+
+            # Convert to mueller matrix
+            mueller_psm = jones_to_mueller(amplitude_response_mat)
+
+            # Get image via stokes vector
+            Sout = (mueller_psm @ stokes[..., None])[..., 0]
+            
+            # Final image comes from first element of stokes vector
+            image = Sout[..., 0]
+            
             pzad = PZPhaseRetrieval(
                 amp=roman_pupil,
                 amp_dx=2400 / roman_pupil.shape[0],
                 efl=20e3, # TODO: Check this
                 wvl=LAMBDA_M,
                 basis=basis,
-                target=defocused_image,
+                target=image,
                 img_dx=IMG_DX,
                 defocus_waves=-defocus,
                 initial_phase=None,
-                stokes=np.array([1., q, 0., 0.]),
+                stokes=stokes,
                 waveplate_angle=0,
                 polarizer_angle=polang
             )
