@@ -37,11 +37,13 @@ amp_j12, phs_j12 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=-3)
 amp_j11, phs_j11 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=5)
 amp_j21, phs_j21 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=6)
 
-PHASE_SCALE = 1e2 
+PHASE_SCALE = 1e0
+kvec = 2 * np.pi / LAMBDA_M
+ipdb.set_trace()
 
 jones_pupil = np.array([
-    [amp_j11 * np.exp(1j * phs_j11*PHASE_SCALE), amp_j12 * np.exp(1j * phs_j12 * PHASE_SCALE)],
-    [amp_j21 * np.exp(1j * phs_j21*PHASE_SCALE), amp_j22 * np.exp(1j * phs_j22 * PHASE_SCALE)],
+    [amp_j11 * np.exp(1j * kvec * phs_j11*PHASE_SCALE), amp_j12 * np.exp(1j * kvec * phs_j12 * PHASE_SCALE)],
+    [amp_j21 * np.exp(1j * kvec * phs_j21*PHASE_SCALE), amp_j22 * np.exp(1j * kvec * phs_j22 * PHASE_SCALE)],
 ])
 
 fig, ax = plt.subplots(ncols=4, nrows=2)
@@ -69,20 +71,20 @@ def create_defocus_aberration(defocus_waves, Npup=amp_j11.shape[0]):
 # Construct the PSF
 
 # Init the vector phase retrieval
-x0 = np.random.random(8 * NMODES) / 100
+x0 = np.random.random(4 * NMODES) * 1e-10
 
 # Construct a Zernike basis
 x, y = make_xy_grid(roman_pupil.shape, diameter=2)
 r, t = cart_to_polar(x, y)
 
-nms = [noll_to_nm(i) for i in range(1, NMODES+1)]
+nms = [noll_to_nm(i) for i in range(2, NMODES+2)]
 basis = list(zernike_nm_sequence(nms, r, t))
 masked_basis = [b * roman_pupil for b in basis]
 
-defocus_waves = [0, 5]
-polarizer_angles = [0]
+defocus_waves = [0, 3, 5]
+polarizer_angles = [0, 45, 90, 135]
 stokes_vectors = [
-    np.array([1, 0, 0, 0])
+    np.array([1, 0, 0, 0]),
 ]
 optlist = []
 defocused_images = []
@@ -159,24 +161,34 @@ r_xy = results.x[1*NMODES : 2*NMODES]
 r_yx = results.x[2*NMODES : 3*NMODES]
 r_yy = results.x[3*NMODES : 4*NMODES]
 
-i_xx = results.x[4*NMODES : 5*NMODES]
-i_xy = results.x[5*NMODES : 6*NMODES]
-i_yx = results.x[6*NMODES : 7*NMODES]
-i_yy = results.x[7*NMODES : 8*NMODES]
+# i_xx = results.x[4*NMODES : 5*NMODES]
+# i_xy = results.x[5*NMODES : 6*NMODES]
+# i_yx = results.x[6*NMODES : 7*NMODES]
+# i_yy = results.x[7*NMODES : 8*NMODES]
 
-c_xx = r_xx + 1j*i_xx
-c_xy = r_xy + 1j*i_xy
-c_yx = r_yx + 1j*i_yx
-c_yy = r_yy + 1j*i_yy
+c_xx = r_xx # + 1j*i_xx
+c_xy = r_xy # + 1j*i_xy
+c_yx = r_yx # + 1j*i_yx
+c_yy = r_yy # + 1j*i_yy
 
-Jxx = np.tensordot(masked_basis, c_xx, axes=(0, 0))
-Jxy = np.tensordot(masked_basis, c_xy, axes=(0, 0))
-Jyx = np.tensordot(masked_basis, c_yx, axes=(0, 0))
-Jyy = np.tensordot(masked_basis, c_yy, axes=(0, 0))
+phi_xx = np.tensordot(masked_basis, c_xx, axes=(0, 0))
+phi_xy = np.tensordot(masked_basis, c_xy, axes=(0, 0))
+phi_yx = np.tensordot(masked_basis, c_yx, axes=(0, 0))
+phi_yy = np.tensordot(masked_basis, c_yy, axes=(0, 0))
+
+kvec = 2 * np.pi / LAMBDA_M
+
+Jxx = np.exp(1j * phi_xx)
+Jxy = np.exp(1j * phi_xy)
+Jyx = np.exp(1j * phi_yx)
+Jyy = np.exp(1j * phi_yy)
+
 Jones_result = np.array([
     [Jxx, Jxy],
     [Jyx, Jyy]
 ])
+
+Jones_result *= roman_pupil
 
 f, g = pzad_list.fg(results.x)
 

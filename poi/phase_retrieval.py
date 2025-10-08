@@ -192,6 +192,7 @@ class PZPhaseRetrieval:
         ])
         self.polarizer = linear_polarizer(theta=self.polarizer_angle)
         self.NMODES = len(basis)
+        self.kvec = 2 * np.pi / self.wvl
 
         # configure the defocus polynomial
         x, y = make_xy_grid(amp.shape[0], diameter=self.epd)
@@ -207,32 +208,40 @@ class PZPhaseRetrieval:
     def update(self, x):
         if not self.zonal:
             NMODES = self.NMODES
+            
             # Parameter extraction
             r_xx = x[0*NMODES : 1*NMODES]
             r_xy = x[1*NMODES : 2*NMODES]
             r_yx = x[2*NMODES : 3*NMODES]
             r_yy = x[3*NMODES : 4*NMODES]
             
-            i_xx = x[4*NMODES : 5*NMODES]
-            i_xy = x[5*NMODES : 6*NMODES]
-            i_yx = x[6*NMODES : 7*NMODES]
-            i_yy = x[7*NMODES : 8*NMODES]
+            # Here for real/imag sensing
+            #i_xx = x[4*NMODES : 5*NMODES]
+            #i_xy = x[5*NMODES : 6*NMODES]
+            #i_yx = x[6*NMODES : 7*NMODES]
+            #i_yy = x[7*NMODES : 8*NMODES]
             
             # Construction of complex coefficients
-            c_xx = r_xx + 1j*i_xx
-            c_xy = r_xy + 1j*i_xy
-            c_yx = r_yx + 1j*i_yx
-            c_yy = r_yy + 1j*i_yy
+            c_xx = r_xx #+ 1j*i_xx
+            c_xy = r_xy #+ 1j*i_xy
+            c_yx = r_yx #+ 1j*i_yx
+            c_yy = r_yy #+ 1j*i_yy
             
             # Basis expansion
-            Jxx = np.tensordot(self.basis, c_xx, axes=(0,0))
-            Jxy = np.tensordot(self.basis, c_xy, axes=(0,0))
-            Jyx = np.tensordot(self.basis, c_yx, axes=(0,0))
-            Jyy = np.tensordot(self.basis, c_yy, axes=(0,0))
+            phi_xx = np.tensordot(self.basis, c_xx, axes=(0,0)) * self.kvec 
+            phi_xy = np.tensordot(self.basis, c_xy, axes=(0,0)) * self.kvec
+            phi_yx = np.tensordot(self.basis, c_yx, axes=(0,0)) * self.kvec
+            phi_yy = np.tensordot(self.basis, c_yy, axes=(0,0)) * self.kvec
+            
+            Jxx = np.exp(1j * phi_xx)
+            Jxy = np.exp(1j * phi_xy)
+            Jyx = np.exp(1j * phi_yx)
+            Jyy = np.exp(1j * phi_yy)
+
             e = np.array([
                 [Jxx, Jxy],
                 [Jyx, Jyy]
-            ])
+            ]) 
             e = np.moveaxis(e, -1, 0)
             e = np.moveaxis(e, -1, 0)
             ARM = np.zeros([*self.D.shape, 2, 2], dtype=np.complex128) 
@@ -276,6 +285,10 @@ class PZPhaseRetrieval:
         self.I = I
         self.E = E
         self.loss = loss
+        self.Jxx = Jxx
+        self.Jxy = Jxy
+        self.Jyx = Jyx
+        self.Jyy = Jyy
         return
 
     def fwd(self, x):
@@ -328,13 +341,24 @@ class PZPhaseRetrieval:
                 fbar[..., i, j] = gbar * self.amp
         
         ebar = fbar @ self.waveplate.conj().T
+
+        # backprop through complex exponentiation
+        Jxxbar = ebar[..., 0, 0]
+        Jxybar = ebar[..., 0, 1]
+        Jyxbar = ebar[..., 1, 0]
+        Jyybar = ebar[..., 1, 1]
+
+        phi_xx_bar = self.kvec * np.imag(Jxxbar * np.conj(self.Jxx))
+        phi_xy_bar = self.kvec * np.imag(Jxybar * np.conj(self.Jxy))
+        phi_yx_bar = self.kvec * np.imag(Jyxbar * np.conj(self.Jyx))
+        phi_yy_bar = self.kvec * np.imag(Jyybar * np.conj(self.Jyy))
         
         # Dot ebar into the basis to get coefficients
         if not self.zonal:
-            dbar_xx = np.tensordot(self.basis, ebar[..., 0, 0])
-            dbar_xy = np.tensordot(self.basis, ebar[..., 0, 1])
-            dbar_yx = np.tensordot(self.basis, ebar[..., 1, 0])
-            dbar_yy = np.tensordot(self.basis, ebar[..., 1, 1])
+            dbar_xx = np.tensordot(self.basis, phi_xx_bar)
+            dbar_xy = np.tensordot(self.basis, phi_xy_bar)
+            dbar_yx = np.tensordot(self.basis, phi_yx_bar)
+            dbar_yy = np.tensordot(self.basis, phi_yy_bar)
 
         else:
             dbar_xx = ebar[..., 0, 0]
@@ -342,21 +366,23 @@ class PZPhaseRetrieval:
             dbar_yx = ebar[..., 1, 0]
             dbar_yy = ebar[..., 1, 1]
         
-        # extract real/imag coefficients
-        bbar_xx = dbar_xx.real
-        bbar_xy = dbar_xy.real
-        bbar_yx = dbar_yx.real
-        bbar_yy = dbar_yy.real
+        # # extract real/imag coefficients
+        # bbar_xx = dbar_xx.real
+        # bbar_xy = dbar_xy.real
+        # bbar_yx = dbar_yx.real
+        # bbar_yy = dbar_yy.real
+        # 
+        # cbar_xx = dbar_xx.imag
+        # cbar_xy = dbar_xy.imag
+        # cbar_yx = dbar_yx.imag 
+        # cbar_yy = dbar_yy.imag
+        # 
+        # # Pack gradients
+        # abar = np.concatenate([bbar_xx, bbar_xy, bbar_yx, bbar_yy,
+        #                        cbar_xx, cbar_xy, cbar_yx, cbar_yy])
         
-        cbar_xx = dbar_xx.imag
-        cbar_xy = dbar_xy.imag
-        cbar_yx = dbar_yx.imag 
-        cbar_yy = dbar_yy.imag
-        
-        # Pack gradients
-        abar = np.concatenate([bbar_xx, bbar_xy, bbar_yx, bbar_yy,
-                               cbar_xx, cbar_xy, cbar_yx, cbar_yy])
-
+        # Pack phase gradients
+        abar = np.concatenate([dbar_xx, dbar_xy, dbar_yx, dbar_yy])
         self.Ibar = Ibar
         self.gbar = gbar
         
