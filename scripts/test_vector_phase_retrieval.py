@@ -37,7 +37,7 @@ amp_j12, phs_j12 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=-3)
 amp_j11, phs_j11 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=5)
 amp_j21, phs_j21 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=6)
 
-PHASE_SCALE = 1e0
+PHASE_SCALE = 1e2
 kvec = 2 * np.pi / LAMBDA_M
 ipdb.set_trace()
 
@@ -82,7 +82,7 @@ basis = list(zernike_nm_sequence(nms, r, t))
 masked_basis = [b * roman_pupil for b in basis]
 
 defocus_waves = [0, 3, 5]
-polarizer_angles = [0, 45, 90, 135]
+polarizer_angles = [0]
 stokes_vectors = [
     np.array([1, 0, 0, 0]),
 ]
