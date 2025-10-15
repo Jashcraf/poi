@@ -43,13 +43,17 @@ def circular_mask(iss, iwa):
 
     return mask
 
-def annular_mask(iss, iwa, owa):
+def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None):
     x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
     r, t = coordinates.cart_to_polar(x, y)
     iwa = iwa * iss.lamD
     owa = owa * iss.lamD
     mask = r > iwa
     mask[r > owa] = 0
+    
+    if theta_min != None and theta_max != None:
+        mask[t < np.radians(theta_min)] = 0
+        mask[t > np.radians(theta_max)] = 0
 
     return mask
 

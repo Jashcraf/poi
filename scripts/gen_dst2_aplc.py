@@ -15,13 +15,12 @@ from astropy.io import fits
 from pathlib import Path
 import time
 import numpy as tnp
-import ipdb
 
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
 from prysm.propagation import focus_fixed_sampling
 from prysm.fttools import MatrixDFTExecutor
-from prysm._richdata import Slices
+
 
 # Available optimizers
 from prysm.x.optym import (
@@ -37,37 +36,37 @@ from prysm.x.optym import (
     AdaMomentum
 )
 
-from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask, knife_edge_mask, circular_mask
-from poi.aplc_design import PAPLCOptimizer, APLCWrapper, ThroughputOptimizer, CoreThroughputOptimizer
+from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
+from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 
 
 # --- USER INPUT DESIGN PARAMS HERE
 USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
-WVL = 0.350 # microns
-IMG_NPIX = 256 + 128
-IWA = 6
+WVL = 0.633 # microns
+IMG_NPIX = (256 + 128)
+IWA = 3.4
 OWA = 20
-AZMIN = -89 # Defines the angular extend of the dark zone
-AZMAX = 89
+AZMIN = 89.9 # Defines the angular extend of the dark zone
+AZMAX = 89.9
 BANDWIDTH = 10 # percent
 NWVLS = 5
 OVERSAMPLE = 8 # pix per lam/D
-pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
-LS_FRAC = 0.85 # Fraction of the pupil radius to use for the Lyot stop
-LS_OBSCURATION_RATIO = 0.0 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 10_0
+pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n1000.fits"
+LS_FRAC = 0.68 # Fraction of the pupil radius to use for the Lyot stop
+LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
+MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
-THROUGHPUT_RELATIVE_WEIGHT =  1e-10 # 1e-15 # relative weight of the throughput optimization
+THROUGHPUT_RELATIVE_WEIGHT =  1e-12 # 1e-15 # relative weight of the throughput optimization
 # ---
 
 if USE_GPU:
     # np switches from numpy to cupy
     set_backend_to_cupy()
 
-tilt_lds = np.arange(0, OWA, 0.25)
+tilt_lds = np.arange(0, OWA, 0.05)
 
 mdft = MatrixDFTExecutor()
 mdft.clear()
@@ -109,39 +108,15 @@ plt.colorbar(label="Normalized Intensity")
 
 iss = ImgSamplingSpec(IMG_NPIX, lambd / OVERSAMPLE, lambd)
 focal_plane_mask = annular_mask(iss, FPM_IWA, FPM_OWA)
-focal_plane_mask *= knife_edge_mask(iss, FPM_IWA)
 dh = annular_mask(iss, IWA, OWA)
-dh *= knife_edge_mask(iss, IWA)
-dh = np.fliplr(dh)
 ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_ratio=LS_OBSCURATION_RATIO)
 
-plt.figure(figsize=[15,5])
-plt.style.use('default')
-plt.subplot(131)
-plt.title('Dark Hole')
-if np.__name__ == "cupy":
-    plt.imshow(dh.get(), cmap='gray')
-else:
-    plt.imshow(dh, cmap='gray')
-plt.subplot(132)
-plt.title('Focal Plane Mask')
-if np.__name__ == "cupy":
-    plt.imshow(focal_plane_mask.get(), cmap='gray')
-else:
-    plt.imshow(focal_plane_mask, cmap='gray')
-plt.subplot(133)
-plt.title('Lyot stop')
-if np.__name__ == "cupy":
-    plt.imshow(ls_mask.get(), cmap='gray')
-else:
-    plt.imshow(ls_mask, cmap='gray')
 
 # Break hermetian symmetry with a little bit of random noise
 noisy = np.random.random(aperture.shape) * aperture / 1000
 optlist = []
-core_window = circular_mask(iss, 0.35)
 for wave in band:
-    aplc = PAPLCOptimizer(amp = aperture,
+    aplc = APLCOptimizer(amp=aperture,
                         amp_dx=pupil_dx,
                         efl=EFL,
                         wvl=wave,
@@ -154,38 +129,31 @@ for wave in band:
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
 
+throughput = ThroughputOptimizer(amp=aperture,
+                                 wvl=WVL,
+                                 basis=None,
+                                 ls=ls_mask,
+                                 relative_weight=THROUGHPUT_RELATIVE_WEIGHT * NWVLS)
 
-    throughput = CoreThroughputOptimizer(amp=aperture,
-                                     amp_dx=pupil_dx,
-                                     efl=EFL,
-                                     wvl=wave,
-                                     basis=None,
-                                     window=(1-core_window), 
-                                     dh_dx=img_dx,
-                                     fpm=focal_plane_mask,
-                                     ls=ls_mask,
-                                     relative_weight=THROUGHPUT_RELATIVE_WEIGHT)
-
-    throughput.set_optimization_method(zonal=True)
-    optlist.append(throughput)
-
+throughput.set_optimization_method(zonal=True)
+optlist.append(throughput)
 
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
 
 # starting guess is a filled aperture
 if np.__name__ == "cupy":
-    x0 = tnp.random.random(aplc.amp.get().shape)[aplc.amp_select.get()]
+    x0 = tnp.ones(aplc.amp.get().shape, dtype=float)[aplc.amp_select.get()]
 else:
-    x0 = tnp.random.random(aplc.amp.shape)[aplc.amp_select]
-x0 /= 100
+    x0 = tnp.ones(aplc.amp.shape, dtype=float)[aplc.amp_select]
+
 # Dry-run to debug
 opt_contrast_throughput.fg(x0)
 
 # initialize the optimizer with box constraints
-opt = F77LBFGSB(opt_contrast_throughput.fg, x0, memory=5,
-                upper_bounds=tnp.ones(x0.shape),
-                lower_bounds=-tnp.ones(x0.shape))
+opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
+                memory=5, upper_bounds=tnp.ones(x0.shape),
+                lower_bounds=tnp.zeros(x0.shape))
 opt.iprint = 0
 
 # some timing
@@ -201,32 +169,44 @@ except StopIteration:
 print(f"Time to Optimizer for {MAX_ITERS}")
 print(time.perf_counter() - t1)
 
-newmask = aplc.amp.astype(tnp.complex128)
-newmask[aplc.amp_select] = tnp.exp(1j * 2 * np.pi / WVL * opt.x)
+newmask = aplc.amp
+newmask[aplc.amp_select] = opt.x
 
-plt.style.use("default")
-plt.figure(figsize=[15,5])
-plt.subplot(131)
-plt.title('Aperture')
+plt.style.use("bmh")
+fig = plt.figure(figsize=[20,10])
+gs = fig.add_gridspec(2, 3)
+
+# Set up axes
+ax1 = fig.add_subplot(gs[0,0])
+ax2 = fig.add_subplot(gs[0,1])
+ax3 = fig.add_subplot(gs[0,2])
+
+ax4 = fig.add_subplot(gs[1, 0])
+ax5 = fig.add_subplot(gs[1, 1:3])
+
+ax1.set_title('Pupil Apodizer')
 if np.__name__ == "cupy":
-    plt.imshow(aperture.get(),cmap='gray')
+    ax1.imshow(newmask.get(),cmap='gray')
 else:
-    plt.imshow(aperture, cmap='gray')
-plt.colorbar()
-plt.subplot(132)
-plt.title('Phase Apodizer')
+    ax1.imshow(newmask, cmap='gray')
+
+# Clear ticks
+ax1.set_xticks([])
+ax1.set_xticklabels([])
+ax1.set_yticks([])
+ax1.set_yticklabels([])
+
+ax2.set_title('Focal Plane Mask')
 if np.__name__ == "cupy":
-    plt.imshow(tnp.angle(newmask.get()),cmap='RdBu_r')
+    ax2.imshow(focal_plane_mask.get(), cmap='gray')
 else:
-    plt.imshow(tnp.angle(newmask), cmap='RdBu_r')
-plt.colorbar(label="microns")
-plt.subplot(133)
-plt.title('Lyot Stop Field')
-if np.__name__ == "cupy":
-    plt.imshow(ls_mask.get()*(np.abs(aplc.c).get()),cmap='inferno')
-else:
-    plt.imshow(ls_mask*(np.abs(aplc.c)),cmap='inferno')
-plt.colorbar()
+    ax2.imshow(focal_plane_mask, cmap='gray')
+
+# Clear ticks
+ax2.set_xticks([])
+ax2.set_xticklabels([])
+ax2.set_yticks([])
+ax2.set_yticklabels([])
 
 okabe_colorblind8 = ['#000000', '#E69F00', '#56B4E9', '#009E73',
                      '#F0E442', '#0072B2', '#D55E00', '#CC79A7']
@@ -245,9 +225,10 @@ def prop_coro(aplc, fpm, ls, wave=WVL, tilt=0, include_fpm=True):
     coro_img_onax_intensity = 0
 
     for wvl in wave:
+        
         # get the tilt phase
         x = np.linspace(-0.5, 0.5, pupil_npix)
-        tilt_phase = np.exp(1j * 2 * np.pi * x * tilt * WVL / wvl)
+        tilt_phase = np.exp(1j * 2 * np.pi * x * tilt * (WVL / wvl))
 
         before_fpm = focus_fixed_sampling(
                     wavefunction= aplc * tilt_phase,
@@ -303,20 +284,28 @@ throughput_07 = []
 before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=False, wave=band)
 contrast_norm = before.max()
 
-before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=True, wave=band)
+before, lyot_field, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=True, wave=band)
 contrast_onax = coro / contrast_norm
+
+# Lyot Stop plot
+ax3.set_title('Lyot Field')
+if np.__name__ == "cupy":
+    ax3.imshow(lyot_field.get(), cmap='inferno', norm=LogNorm())
+else:
+    ax3.imshow(lyot_field, cmap='inferno', norm=LogNorm())
+
+# Clear ticks
+ax3.set_xticks([])
+ax3.set_xticklabels([])
+ax3.set_yticks([])
+ax3.set_yticklabels([])
+
 
 for i, ld in tqdm(enumerate(tilt_lds)):
 
     before, ls, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=ld, wave=band)
     before_I = np.sum(before)
     coro_I = coro
-    if ld == 10:
-        plt.figure()
-        plt.title(f"Tilt = {ld}")
-        plt.imshow(coro_I.get(), cmap="inferno", norm=LogNorm(vmax=1e4))
-        plt.colorbar()
-
     throughput.append(np.sum(coro_I) / np.sum(NWVLS * aperture))
 
     # get value in 0.7 L/D (recall 1/OS is pixelscale in L/D)
@@ -331,70 +320,54 @@ for i, ld in tqdm(enumerate(tilt_lds)):
     throughput_07.append(value_in_aperture / np.sum(NWVLS * aperture))
 
 # get the bmh colors
-plt.style.use("bmh")
 colors = plt.rcParams['axes.prop_cycle'].by_key()['color'][1:]
 
-def radial_profile(data, center=[int(IMG_NPIX/2),int(IMG_NPIX/2)]):
-    y, x = tnp.indices((data.shape))
-    r = tnp.sqrt((x - center[0])**2 + (y - center[1])**2)
-    r = r.astype(int)
 
-    tbin = tnp.bincount(r.ravel(), data.ravel())
-    nr = tnp.bincount(r.ravel())
-    radialprofile = tbin / nr
-    return radialprofile
-
-plt.figure(figsize=[12,4])
-plt.subplot(121)
+ax4.set_title('Throughput')
 if np.__name__ == "cupy":
-    plt.plot(tilt_lds.get(), np.array(throughput).get(), linestyle='dashed', color=colors[0])
-    plt.plot(tilt_lds.get(), np.array(throughput_07).get(), linestyle='solid', color=colors[0])
-    plt.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
-    plt.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='dashed', color='black', label=r'$r = \infty$')
+    ax4.plot(tilt_lds.get(), np.array(throughput).get(), linestyle='dashed', color=colors[0])
+    ax4.plot(tilt_lds.get(), np.array(throughput_07).get(), linestyle='solid', color=colors[0])
+    ax4.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
+    ax4.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='dashed', color='black', label=r'$r = \infty$')
 else:
-    plt.plot(tilt_lds, np.array(throughput), linestyle='dashed', color=colors[0])
-    plt.plot(tilt_lds, np.array(throughput_07), linestyle='solid', color=colors[0])
-    plt.plot(tilt_lds, -np.array(throughput), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
+    ax4.plot(tilt_lds, np.array(throughput), linestyle='dashed', color=colors[0])
+    ax4.plot(tilt_lds, np.array(throughput_07), linestyle='solid', color=colors[0])
+    ax4.plot(tilt_lds, -np.array(throughput), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
 # plt.vlines(3.5,-1,1, color=colors[0], alpha=0.5)
 # plt.vlines(2.5,-1,1, color=colors[1], alpha=0.5)
-plt.xlabel('Angular Separation, '+r'$\lambda / D$')
+ax4.set_xlabel('Angular Separation, '+r'$\lambda / D$')
 # plt.text(3, 0.15, 'APLC-3.5 IWA', rotation=90, color=colors[0], fontweight='bold')
 # plt.text(2, 0.15, 'APLC-2.5 IWA', rotation=90, color=colors[1], fontweight='bold')
-plt.ylabel('Throughput')
-plt.legend(loc='lower right')
-plt.ylim(0,1)
-plt.xlim(0, OWA)
+ax4.set_ylabel('Throughput')
+ax4.legend(loc='lower right')
+ax4.set_ylim(0,1)
+ax4.set_xlim(0, OWA)
 
+from poi.processing import azimuthal_average
 
-
-# get using prysm slices
-x = np.linspace(-IMG_NPIX / 2, IMG_NPIX / 2, IMG_NPIX)
-y = np.copy(x)
-dh_nanmask = np.copy(dh)
-dh[dh < 1] = np.nan
-contrast_slice = Slices(contrast_onax * dh_nanmask, x, y)
-points, radial_profile = contrast_slice.azavg
-#radial_profile = radial_profile((contrast_onax * dh).get())
-x_axis = tnp.ones_like(radial_profile.get()) # just get array size
-dx_ld = 1/OVERSAMPLE/2 # pixelscale in lambda/D
-x_ticks = [dx_ld*i for i in range(len(x_axis))]
+# get radial
+masked_contrast = contrast_onax
+radial_profile, bins = azimuthal_average(masked_contrast.get(), angle_range=[0, 359])
+x_axis = tnp.ones_like(radial_profile) # just get array size
+dx_ld = 1/OVERSAMPLE # pixelscale in lambda/D
+x_ticks = [dx_ld*i for i in bins]
 x_ticks = tnp.array(x_ticks)
 
-plt.subplot(122)
-plt.plot(x_ticks, radial_profile.get(), color=colors[0], label='PAPLC')
+ax5.set_title("Contrast Curve")
+ax5.plot(x_ticks, radial_profile, color=colors[0], label='APLC')
 # plt.vlines(3.5,0,1, color=colors[0], alpha=0.5, linestyle='solid')
 # plt.vlines(2.5,0,1, color=colors[1], alpha=0.5, linestyle='solid')
-plt.xlabel('Angular Separation, '+r'$\lambda / D$')
-plt.xlim(0, OWA)
-plt.ylim(1e-12, 1)
-plt.yscale('log')
-plt.ylabel('Normalized Intensity')
-plt.legend()
-# plt.savefig('coronagraph_throughput_and_contrast.pdf')
-
-
-plt.figure()
-plt.imshow(contrast_onax.get(), cmap="inferno", norm=LogNorm(vmin=1e-12, vmax=1e-7))
-plt.colorbar(label="Normalized Intensity")
+ax5.set_xlabel('Angular Separation, '+r'$\lambda / D$')
+ax5.set_xlim(0, OWA)
+ax5.set_ylim(1e-12, 1e-5)
+ax5.set_yscale('log')
+ax5.set_ylabel('Normalized Intensity')
+ax5.legend()
+plt.savefig('DST2_coronagraph_throughput_and_contrast.pdf')
 
 plt.show()
+# Save apodizer as .fits
+fits.writeto(f"EAC1_DST2_{PUPIL_NPIX}Npup_{IMG_NPIX}Nimg_{IWA}IWA_{OWA}OWA_{LS_FRAC}LS.fits", newmask, overwrite=True)
+
+
+

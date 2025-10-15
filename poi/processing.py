@@ -1,4 +1,5 @@
-from prysm.mathops import np
+import numpy as np
+import matplotlib.pyplot as plt
 
 def threshold(array, threshold, threshold_value=0):
     """
@@ -96,7 +97,6 @@ def phase_unwrap_2d(phase_wrapped):
 
     pluspi = np.pi*np.ones_like(phmirror)
     mask = (deltafd > pluspi).astype(int)
-
     deltafd = deltafd - mask*2*np.pi
     negpi = -pluspi
     mask = (deltafd < negpi).astype(int)
