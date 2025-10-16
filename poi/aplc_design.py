@@ -391,7 +391,7 @@ class APLCOptimizer:
             method='mdft')
 
         I = np.abs(D)**2
-        I = I / self.contrast_norm
+        # I = I / self.contrast_norm
         E = np.sum((I[self.dh] - self.dh_target)**2) * self.weight
 
         self.aplc = aplc
@@ -417,7 +417,7 @@ class APLCOptimizer:
         self.update(x)
         Ibar = np.zeros(self.dh.shape, dtype=np.float32)
         Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target) * self.weight
-
+        # Ibar = Ibar / self.contrast_norm
         Dbar = 2 * Ibar * self.D
 
         # backprop from image to lyot stop

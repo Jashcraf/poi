@@ -46,18 +46,18 @@ USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.633 # microns
-IMG_NPIX = (256 + 128) // 2
+IMG_NPIX = (256 + 128) // 1
 IWA = 3.3
 OWA = 21.5
 AZMIN = -89.9 # Defines the angular extend of the dark zone
 AZMAX = 89.9
 BANDWIDTH = 10 # percent
 NWVLS = 5
-OVERSAMPLE = 4 # pix per lam/D
-pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n500.fits"
+OVERSAMPLE = 8 # pix per lam/D
+pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n1000.fits"
 LS_FRAC = 0.68 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100
+MAX_ITERS = 10_000
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
 
@@ -125,7 +125,7 @@ for wave in band:
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=1)
+                        weight=10000)
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
 
@@ -283,7 +283,7 @@ throughput_07 = []
 
 # Get the contrast normalization
 before, _, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=False, wave=band)
-contrast_norm = before.max()
+contrast_norm = coro.max()
 
 before, lyot_field, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0, include_fpm=True, wave=band)
 contrast_onax = coro / contrast_norm
@@ -360,7 +360,7 @@ ax5.set_xlim(0, OWA)
 from poi.processing import azimuthal_average
 
 # get radial
-masked_contrast = contrast_onax
+masked_contrast = contrast_onax * dh
 radial_profile, bins = azimuthal_average(masked_contrast.get(), angle_range=[0, 359])
 x_axis = tnp.ones_like(radial_profile) # just get array size
 dx_ld = 1/OVERSAMPLE # pixelscale in lambda/D
