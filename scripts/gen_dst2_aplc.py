@@ -15,6 +15,7 @@ from astropy.io import fits
 from pathlib import Path
 import time
 import numpy as tnp
+import sys
 
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
@@ -45,21 +46,27 @@ USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.633 # microns
-IMG_NPIX = (256 + 128)
-IWA = 3.4
-OWA = 20
-AZMIN = 89.9 # Defines the angular extend of the dark zone
+IMG_NPIX = (256 + 128) // 2
+IWA = 3.3
+OWA = 21.5
+AZMIN = -89.9 # Defines the angular extend of the dark zone
 AZMAX = 89.9
 BANDWIDTH = 10 # percent
 NWVLS = 5
-OVERSAMPLE = 8 # pix per lam/D
-pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n1000.fits"
+OVERSAMPLE = 4 # pix per lam/D
+pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n500.fits"
 LS_FRAC = 0.68 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100_000
+MAX_ITERS = 1000
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
-THROUGHPUT_RELATIVE_WEIGHT =  1e-12 # 1e-15 # relative weight of the throughput optimization
+
+if len(sys.argv) > 1:
+    THROUGHPUT_LOG_WEIGHT = float(sys.argv[1])
+else:
+    THROUGHPUT_LOG_WEIGHT =  11 # 1e-15 # relative weight of the throughput optimization
+
+THROUGHPUT_RELATIVE_WEIGHT = 10 ** (-1 * THROUGHPUT_LOG_WEIGHT)
 # ---
 
 if USE_GPU:
@@ -79,7 +86,7 @@ print(band)
 # Set the FPM inner working angle and outer working angle to have margin before dark hole
 FPM_IWA = (1 + half_bw) * IWA
 FPM_OWA = (1 - half_bw) * OWA
-
+print(f"FPM = {FPM_IWA}-{FPM_OWA}")
 # Load the aperture
 aperture = np.array(fits.getdata(pth_to_aperture))
 PUPIL_NPIX = aperture.shape[0]
@@ -97,18 +104,10 @@ psf = focus_fixed_sampling(wavefunction=aperture,
 
 lambd = EFL / EPD * WVL
 psf_scalar = np.abs(psf)**2
-
-plt.figure()
-if np.__name__ == "cupy":
-    psf = (psf_scalar / psf_scalar.max()).get()
-else:
-    psf = psf_scalar / psf_scalar.max()
-plt.imshow(psf, norm=LogNorm())
-plt.colorbar(label="Normalized Intensity")
-
 iss = ImgSamplingSpec(IMG_NPIX, lambd / OVERSAMPLE, lambd)
 focal_plane_mask = annular_mask(iss, FPM_IWA, FPM_OWA)
-dh = annular_mask(iss, IWA, OWA)
+dh = annular_mask(iss, IWA, OWA, theta_min=AZMIN, theta_max=AZMAX)
+dh = np.fliplr(dh)
 ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_ratio=LS_OBSCURATION_RATIO)
 
 
@@ -152,7 +151,7 @@ opt_contrast_throughput.fg(x0)
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
-                memory=5, upper_bounds=tnp.ones(x0.shape),
+                memory=10, upper_bounds=tnp.ones(x0.shape),
                 lower_bounds=tnp.zeros(x0.shape))
 opt.iprint = 0
 
@@ -174,15 +173,16 @@ newmask[aplc.amp_select] = opt.x
 
 plt.style.use("bmh")
 fig = plt.figure(figsize=[20,10])
-gs = fig.add_gridspec(2, 3)
+gs = fig.add_gridspec(2, 4)
 
 # Set up axes
 ax1 = fig.add_subplot(gs[0,0])
 ax2 = fig.add_subplot(gs[0,1])
 ax3 = fig.add_subplot(gs[0,2])
+ax4 = fig.add_subplot(gs[0, 3])
 
-ax4 = fig.add_subplot(gs[1, 0])
-ax5 = fig.add_subplot(gs[1, 1:3])
+ax5 = fig.add_subplot(gs[1, 0:2])
+ax6 = fig.add_subplot(gs[1, 2:4])
 
 ax1.set_title('Pupil Apodizer')
 if np.__name__ == "cupy":
@@ -300,6 +300,19 @@ ax3.set_xticklabels([])
 ax3.set_yticks([])
 ax3.set_yticklabels([])
 
+# Focal Plane plot
+ax4.set_title('Starlight')
+if np.__name__ == "cupy":
+    ax4.imshow(contrast_onax.get(), cmap='inferno', norm=LogNorm(vmin=1e-11, vmax=1e-5))
+else:
+    ax4.imshow(contrast_onax, cmap='inferno', norm=LogNorm())
+
+# Clear ticks
+ax4.set_xticks([])
+ax4.set_xticklabels([])
+ax4.set_yticks([])
+ax4.set_yticklabels([])
+
 
 for i, ld in tqdm(enumerate(tilt_lds)):
 
@@ -323,25 +336,25 @@ for i, ld in tqdm(enumerate(tilt_lds)):
 colors = plt.rcParams['axes.prop_cycle'].by_key()['color'][1:]
 
 
-ax4.set_title('Throughput')
+ax5.set_title('Throughput')
 if np.__name__ == "cupy":
-    ax4.plot(tilt_lds.get(), np.array(throughput).get(), linestyle='dashed', color=colors[0])
-    ax4.plot(tilt_lds.get(), np.array(throughput_07).get(), linestyle='solid', color=colors[0])
-    ax4.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
-    ax4.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='dashed', color='black', label=r'$r = \infty$')
+    ax5.plot(tilt_lds.get(), np.array(throughput).get(), linestyle='dashed', color=colors[0])
+    ax5.plot(tilt_lds.get(), np.array(throughput_07).get(), linestyle='solid', color=colors[0])
+    ax5.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
+    ax5.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='dashed', color='black', label=r'$r = \infty$')
 else:
-    ax4.plot(tilt_lds, np.array(throughput), linestyle='dashed', color=colors[0])
-    ax4.plot(tilt_lds, np.array(throughput_07), linestyle='solid', color=colors[0])
-    ax4.plot(tilt_lds, -np.array(throughput), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
+    ax5.plot(tilt_lds, np.array(throughput), linestyle='dashed', color=colors[0])
+    ax5.plot(tilt_lds, np.array(throughput_07), linestyle='solid', color=colors[0])
+    ax5.plot(tilt_lds, -np.array(throughput), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
 # plt.vlines(3.5,-1,1, color=colors[0], alpha=0.5)
 # plt.vlines(2.5,-1,1, color=colors[1], alpha=0.5)
-ax4.set_xlabel('Angular Separation, '+r'$\lambda / D$')
+ax5.set_xlabel('Angular Separation, '+r'$\lambda / D$')
 # plt.text(3, 0.15, 'APLC-3.5 IWA', rotation=90, color=colors[0], fontweight='bold')
 # plt.text(2, 0.15, 'APLC-2.5 IWA', rotation=90, color=colors[1], fontweight='bold')
-ax4.set_ylabel('Throughput')
-ax4.legend(loc='lower right')
-ax4.set_ylim(0,1)
-ax4.set_xlim(0, OWA)
+ax5.set_ylabel('Throughput')
+ax5.legend(loc='lower right')
+ax5.set_ylim(0,1)
+ax5.set_xlim(0, OWA)
 
 from poi.processing import azimuthal_average
 
@@ -353,21 +366,20 @@ dx_ld = 1/OVERSAMPLE # pixelscale in lambda/D
 x_ticks = [dx_ld*i for i in bins]
 x_ticks = tnp.array(x_ticks)
 
-ax5.set_title("Contrast Curve")
-ax5.plot(x_ticks, radial_profile, color=colors[0], label='APLC')
+ax6.set_title("Contrast Curve")
+ax6.plot(x_ticks, radial_profile, color=colors[0], label='APLC')
 # plt.vlines(3.5,0,1, color=colors[0], alpha=0.5, linestyle='solid')
 # plt.vlines(2.5,0,1, color=colors[1], alpha=0.5, linestyle='solid')
-ax5.set_xlabel('Angular Separation, '+r'$\lambda / D$')
-ax5.set_xlim(0, OWA)
-ax5.set_ylim(1e-12, 1e-5)
-ax5.set_yscale('log')
-ax5.set_ylabel('Normalized Intensity')
-ax5.legend()
-plt.savefig('DST2_coronagraph_throughput_and_contrast.pdf')
+ax6.set_xlabel('Angular Separation, '+r'$\lambda / D$')
+ax6.set_xlim(0, OWA)
+ax6.set_ylim(1e-12, 1e-5)
+ax6.set_yscale('log')
+ax6.set_ylabel('Normalized Intensity')
+ax6.legend()
+plt.savefig(f"dst2/EAC1_DST2_{PUPIL_NPIX}Npup_{IMG_NPIX}Nimg_{IWA}IWA_{OWA}OWA_{LS_FRAC}LS_{THROUGHPUT_LOG_WEIGHT}throughput_weight.pdf")
 
-plt.show()
 # Save apodizer as .fits
-fits.writeto(f"EAC1_DST2_{PUPIL_NPIX}Npup_{IMG_NPIX}Nimg_{IWA}IWA_{OWA}OWA_{LS_FRAC}LS.fits", newmask, overwrite=True)
-
+newmask = newmask.get()
+fits.writeto(f"dst2/EAC1_DST2_{PUPIL_NPIX}Npup_{IMG_NPIX}Nimg_{IWA}IWA_{OWA}OWA_{LS_FRAC}LS_{THROUGHPUT_LOG_WEIGHT}throughput_weight.fits", newmask, overwrite=True)
 
 
