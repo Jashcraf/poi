@@ -301,7 +301,8 @@ class APLCOptimizer:
 
     """
     def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx, fpm, ls,
-                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None):
+                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None,
+                 weight=1):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float32)
 
@@ -329,6 +330,7 @@ class APLCOptimizer:
         self.fpm = fpm
         self.ls = ls
         self.cost = []
+        self.weight = weight
 
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
@@ -390,7 +392,7 @@ class APLCOptimizer:
 
         I = np.abs(D)**2
         I = I / self.contrast_norm
-        E = np.sum((I[self.dh] - self.dh_target)**2)
+        E = np.sum((I[self.dh] - self.dh_target)**2) * self.weight
 
         self.aplc = aplc
         self.I = I
@@ -414,7 +416,7 @@ class APLCOptimizer:
     def rev(self, x):
         self.update(x)
         Ibar = np.zeros(self.dh.shape, dtype=np.float32)
-        Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target)
+        Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target) * self.weight
 
         Dbar = 2 * Ibar * self.D
 
