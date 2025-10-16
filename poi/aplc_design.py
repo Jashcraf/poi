@@ -356,6 +356,9 @@ class APLCOptimizer:
             output_samples=self.dh.shape,
             shift=(0, 0),
             method='mdft')
+        
+        # Get contrast normalization (approx)
+        self.contrast_norm = (np.abs(B)**2).max()
 
         # apply focal plane mask
         C = B * self.fpm
@@ -386,6 +389,7 @@ class APLCOptimizer:
             method='mdft')
 
         I = np.abs(D)**2
+        I = I / self.contrast_norm
         E = np.sum((I[self.dh] - self.dh_target)**2)
 
         self.aplc = aplc
