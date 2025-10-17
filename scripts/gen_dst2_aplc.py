@@ -57,7 +57,7 @@ OVERSAMPLE = 8 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n1000.fits"
 LS_FRAC = 0.68 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 10_000
+MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
 
@@ -88,7 +88,7 @@ FPM_IWA = (1 + half_bw) * IWA
 FPM_OWA = (1 - half_bw) * OWA
 print(f"FPM = {FPM_IWA}-{FPM_OWA}")
 # Load the aperture
-aperture = np.array(fits.getdata(pth_to_aperture))
+aperture = np.round(np.array(fits.getdata(pth_to_aperture)))
 PUPIL_NPIX = aperture.shape[0]
 
 # Create the focal plane mask
@@ -125,7 +125,7 @@ for wave in band:
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=10000)
+                        weight=1)
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
 
@@ -136,7 +136,7 @@ throughput = ThroughputOptimizer(amp=aperture,
                                  relative_weight=THROUGHPUT_RELATIVE_WEIGHT * NWVLS)
 
 throughput.set_optimization_method(zonal=True)
-#optlist.append(throughput)
+optlist.append(throughput)
 
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
