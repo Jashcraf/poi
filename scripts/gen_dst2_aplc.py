@@ -16,6 +16,7 @@ from pathlib import Path
 import time
 import numpy as tnp
 import sys
+from scipy.optimize import minimize, Bounds
 
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
@@ -151,21 +152,43 @@ else:
 opt_contrast_throughput.fg(x0)
 
 # initialize the optimizer with box constraints
-opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
-                memory=10, upper_bounds=tnp.ones(x0.shape),
-                lower_bounds=tnp.zeros(x0.shape))
-opt.iprint = 0
+# opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
+#                 memory=10, upper_bounds=tnp.ones(x0.shape),
+#                 lower_bounds=tnp.zeros(x0.shape))
+# opt.iprint = 0
 
 # some timing
 t1 = time.perf_counter()
 
 # This is in a try-except block because the optimizer will
 # sometimes raise a StopIteration exception when it is done
-try:
-    for _ in tqdm(range(MAX_ITERS)):
-        opt.step()
-except StopIteration:
-    pass
+# try:
+#     for _ in tqdm(range(MAX_ITERS)):
+#         opt.step()
+# except StopIteration:
+#     pass
+
+# I wonder if adjusting tol will help us get to a solution
+
+# Set up bounds
+ul_bounds = Bounds(lb=np.zeros_like(x0), ub=np.ones_like(x0))
+
+# Progress bar disease
+TOL = 1e-20
+MAXITER = 100_000
+pbar = tqdm(total=MAXITER, desc=f"Optimizing DST2 Mask with ftol, gtol={TOL} ")
+
+def callback(x):
+    pbar.update(1)
+
+def optimizer_fg(x):
+    f, g = opt_contrast_throughput.fg(x)
+    return f.get(), g.get()
+
+opt = minimize(optimizer_fg, x0, jac=True, bounds=ul_bounds, callback=callback,
+               method="L-BFGS-B",
+               options={"ftol":TOL, "gtol":TOL, "maxiter":MAXITER, "disp":False})
+
 print(f"Time to Optimizer for {MAX_ITERS}")
 print(time.perf_counter() - t1)
 
@@ -276,7 +299,6 @@ fx, fy = np.meshgrid(fx, fx)
 
 # 14 mins uh oh
 from matplotlib.colors import LogNorm
-from tqdm import tqdm
 throughput = []
 
 throughput_07 = []

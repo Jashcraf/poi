@@ -25,15 +25,15 @@ from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot
 from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 import sys
 
-IWAS = [3, 3.5, 4, 4.5, 5, 5.5, 6]
+AZMAGS = [15.0, 30.0, 45.0, 60.0, 75.0, 89.9]
 okabe_colorblind8 = ['#E69F00', '#56B4E9', '#009E73',
                      '#F0E442', '#0072B2', '#D55E00', '#CC79A7','#000000']
 
 plt.figure()
 plt.title("Field PSF Core Throughput")
 # Construct coronagraph and build throughput plot
-for color, IWA in zip(okabe_colorblind8, IWAS):
-    IWA = float(IWA)
+for color, AZMAG in zip(okabe_colorblind8, AZMAGS):
+    IWA = 6
     # --- USER INPUT DESIGN PARAMS HERE
     USE_GPU = True # Use GPU for the optimization
     EPD = 24.4381  # milimeters
@@ -102,8 +102,8 @@ for color, IWA in zip(okabe_colorblind8, IWAS):
     ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_ratio=LS_OBSCURATION_RATIO)
 
     # Load the computed mask
-    mask_path = Path.home() / "poi/scripts/iwa_survey" \
-                / f"LUVOIRB_512Npup_192Nimg_{IWA}IWA_20OWA_0.9LS_13throughput_weight.fits"
+    mask_path = Path.home() / "poi/scripts/azmag_survey" \
+                / f"LUVOIRB_512Npup_192Nimg_6IWA_20OWA_{AZMAG}AZ_0.9LS_13throughput_weight.fits"
 
 
     newmask = np.array(fits.getdata(mask_path))
@@ -208,12 +208,11 @@ for color, IWA in zip(okabe_colorblind8, IWAS):
 
     if np.__name__ == "cupy":
         # plt.plot(tilt_lds.get(), np.array(throughput).get(), linestyle='dashed', color=color, label=f"{IWA}"+r"$\lambda/D$")
-        plt.plot(tilt_lds.get(), np.array(throughput_07).get(), linestyle='solid', color=color, label=f"{IWA}"+r"$\lambda/D$")
+        plt.plot(tilt_lds.get(), np.array(throughput_07).get(), linestyle='solid', color=color, label=r"$\theta=$"+f"{AZMAG}"+r"$^{\circ}$")
     else:
         plt.plot(tilt_lds, np.array(throughput), linestyle='dashed', color=colors[0])
         plt.plot(tilt_lds, np.array(throughput_07), linestyle='solid', color=colors[0])
         plt.plot(tilt_lds, -np.array(throughput), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
-
 plt.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
 plt.legend()
 plt.xlabel('Angular Separation, '+r'$\lambda / D$')
