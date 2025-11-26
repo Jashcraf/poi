@@ -190,7 +190,13 @@ class PZPhaseRetrieval:
             [1., 0.],
             [0., 1.]
         ])
-        self.polarizer = linear_polarizer(theta=self.polarizer_angle)
+        #self.polarizer = linear_polarizer(theta=self.polarizer_angle)
+        
+        self.polarizer = np.array([
+            [1., 0.],
+            [0., 1.]
+        ])
+
         self.NMODES = len(basis)
         self.kvec = 2 * np.pi / self.wvl
 

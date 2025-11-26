@@ -37,15 +37,15 @@ amp_j12, phs_j12 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=-3)
 amp_j11, phs_j11 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=5)
 amp_j21, phs_j21 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=6)
 
-PHASE_SCALE = 1e2
+PHASE_SCALE = 10
 kvec = 2 * np.pi / LAMBDA_M
-ipdb.set_trace()
 
 jones_pupil = np.array([
     [amp_j11 * np.exp(1j * kvec * phs_j11*PHASE_SCALE), amp_j12 * np.exp(1j * kvec * phs_j12 * PHASE_SCALE)],
     [amp_j21 * np.exp(1j * kvec * phs_j21*PHASE_SCALE), amp_j22 * np.exp(1j * kvec * phs_j22 * PHASE_SCALE)],
 ])
 
+average_phase = 0
 fig, ax = plt.subplots(ncols=4, nrows=2)
 for i in range(2):
     for j in range(2):
@@ -53,6 +53,13 @@ for i in range(2):
         J = jones_pupil[i, j] / roman_pupil
         ax[i, j].imshow(np.abs(J), vmin=0.98, vmax=1, cmap="inferno")
         ax[i, j+2].imshow(np.angle(J) / roman_pupil, vmin=-LAMBDA_M/WAVE_MAG, vmax=LAMBDA_M/WAVE_MAG, cmap="RdBu_r")
+        average_phase += np.angle(J)
+
+# Get the average retardation
+plt.figure()
+plt.title("Average Phase solution")
+plt.imshow(average_phase / roman_pupil, cmap="RdBu_r")
+plt.colorbar()
 
 # Convert to prysm-friendly units
 LAMBDA_M *= 1e6
@@ -81,7 +88,7 @@ nms = [noll_to_nm(i) for i in range(2, NMODES+2)]
 basis = list(zernike_nm_sequence(nms, r, t))
 masked_basis = [b * roman_pupil for b in basis]
 
-defocus_waves = [0, 3, 5]
+defocus_waves = [0, 3]
 polarizer_angles = [0]
 stokes_vectors = [
     np.array([1, 0, 0, 0]),
@@ -98,7 +105,7 @@ for stokes in stokes_vectors:
 
             # Construct the polarizer
             pol = linear_polarizer(theta=np.radians(polang))
-
+            pol = np.eye(2)
             
             # Init image
             amplitude_response_mat = np.zeros([IMG_NPIX, IMG_NPIX, 2, 2], dtype=np.complex128)
