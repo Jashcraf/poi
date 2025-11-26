@@ -16,8 +16,6 @@ class ImgSamplingSpec:
         dx = lamD/px_per_lamD
         return cls(N=N, dx=dx, lamD=lamD)
 
-
-
 # create the core mask
 def inner_core_mask(iss, iwa):
 
@@ -28,12 +26,14 @@ def inner_core_mask(iss, iwa):
 
     return mask
 
+
 def knife_edge_mask(iss, iwa):
     x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
     iwa = iwa * iss.lamD
     mask = x > iwa
 
     return mask
+
 
 def circular_mask(iss, iwa):
     x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
@@ -42,6 +42,7 @@ def circular_mask(iss, iwa):
     mask = r > iwa
 
     return mask
+
 
 def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None):
     x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
@@ -57,6 +58,7 @@ def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None):
 
     return mask
 
+
 def lyot_mask(pupil_npix, pupil_dx, frac, obscuration_ratio=0.0):
 
     x, y = coordinates.make_xy_grid(pupil_npix, dx=pupil_dx)
@@ -68,9 +70,8 @@ def lyot_mask(pupil_npix, pupil_dx, frac, obscuration_ratio=0.0):
 
     return ls
 
+
 class Sigmoid:
-    """Sigmoid(x)
-    """
     def __init__(self, a=1, x0=0, y0=0):
         """Activation function Sigmoid(x)
 
@@ -99,6 +100,8 @@ class Sigmoid:
 class Dummy:
 
     def __init__(self, a):
+        """Activation function that does nothing
+        """
         self.a = 1
         self.x0 = 0
 
@@ -107,6 +110,30 @@ class Dummy:
 
     def backprop(self, xbar):
         return xbar
+
+
+class BinarizationPenalty:
+    def __init__(self, weight):
+        self.weight = weight
+
+    def update(self, x):
+        inner = (1 - x) * x 
+        self.E = self.weight * np.sum(inner)
+        return 
+
+    def fwd(self, x):
+        self.update(x)
+        return self.E
+
+    def rev(self, x):
+        self.update(x)
+        grad = (1 - 2*x) * self.weight * self.E
+        return grad
+
+    def fg(self, x):
+        g = self.rev(x)
+        f = self.E
+        return f, g
 
 
 class PAPLCOptimizer:

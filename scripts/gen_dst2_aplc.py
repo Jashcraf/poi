@@ -39,26 +39,26 @@ from prysm.x.optym import (
 )
 
 from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
-from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
+from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer, BinarizationPenalty
 
 
 # --- USER INPUT DESIGN PARAMS HERE
-USE_GPU = True # Use GPU for the optimization
+USE_GPU = False # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.633 # microns
-IMG_NPIX = (256 + 128) // 1
+IMG_NPIX = (256 + 128) // 2
 IWA = 3.225
 OWA = 21.3
 AZMIN = -89.9 # Defines the angular extend of the dark zone
 AZMAX = 89.9
 BANDWIDTH = 10 # percent
-NWVLS = 5
-OVERSAMPLE = 8 # pix per lam/D
+NWVLS = 3
+OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n1000.fits"
 LS_FRAC = 0.68 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100_000
+MAX_ITERS = 100
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
 
@@ -137,7 +137,9 @@ throughput = ThroughputOptimizer(amp=aperture,
                                  relative_weight=THROUGHPUT_RELATIVE_WEIGHT * NWVLS)
 
 throughput.set_optimization_method(zonal=True)
-optlist.append(throughput)
+# optlist.append(throughput)
+binary = BinarizationPenalty(weight=1e-7 * NWVLS)
+optlist.append(binary)
 
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
@@ -175,7 +177,7 @@ ul_bounds = Bounds(lb=np.zeros_like(x0), ub=np.ones_like(x0))
 
 # Progress bar disease
 TOL = 1e-20
-MAXITER = 100_000
+MAXITER = 10000
 pbar = tqdm(total=MAXITER, desc=f"Optimizing DST2 Mask with ftol, gtol={TOL} ")
 
 def callback(x):
@@ -185,7 +187,7 @@ def optimizer_fg(x):
     f, g = opt_contrast_throughput.fg(x)
     return f.get(), g.get()
 
-opt = minimize(optimizer_fg, x0, jac=True, bounds=ul_bounds, callback=callback,
+opt = minimize(opt_contrast_throughput.fg, x0, jac=True, bounds=ul_bounds, callback=callback,
                method="L-BFGS-B",
                options={"ftol":TOL, "gtol":TOL, "maxiter":MAXITER, "disp":False})
 
@@ -383,7 +385,10 @@ from poi.processing import azimuthal_average
 
 # get radial
 masked_contrast = contrast_onax * dh
-radial_profile, bins = azimuthal_average(masked_contrast.get(), angle_range=[0, 359])
+if hasattr(masked_contrast, "get"):
+    masked_contrast = masked_contrast.get()
+
+radial_profile, bins = azimuthal_average(masked_contrast, angle_range=[0, 359])
 x_axis = tnp.ones_like(radial_profile) # just get array size
 dx_ld = 1/OVERSAMPLE # pixelscale in lambda/D
 x_ticks = [dx_ld*i for i in bins]
@@ -402,7 +407,8 @@ ax6.legend()
 plt.savefig(f"dst2/EAC1_DST2_{PUPIL_NPIX}Npup_{IMG_NPIX}Nimg_{IWA}IWA_{OWA}OWA_{LS_FRAC}LS_{THROUGHPUT_LOG_WEIGHT}throughput_weight.pdf")
 
 # Save apodizer as .fits
-newmask = newmask.get()
+if hasattr(newmask, "get"):
+    newmask = newmask.get()
 fits.writeto(f"dst2/EAC1_DST2_{PUPIL_NPIX}Npup_{IMG_NPIX}Nimg_{IWA}IWA_{OWA}OWA_{LS_FRAC}LS_{THROUGHPUT_LOG_WEIGHT}throughput_weight.fits", newmask, overwrite=True)
 
 
