@@ -136,9 +136,81 @@ class BinarizationPenalty:
         return f, g
 
 
+class AugmentedLagrangian:
+    def __init__(self, objective, constraints, constraint_vals, initial_multipliers, penalty=10):
+        """
+        Optimization wrapper that uses the Augmented Lagrangian Method
+        to iteratively solve for the optimal lagrange multipliers of 
+        multiple planes to be optimized. Based on Emiel Por's 2022 SPIE
+        Proceeding
+
+        Parameters
+        ----------
+        objective: Optimizer
+            Objective to optimize, which has an .fg() method.
+        constraints: list of Optimizers
+            list of optimizers, each of which have an .fg() method. These
+            will have associated constraints, given by constraint_vals.
+        initial_multipliers: list of float
+            Initial set of lagrange multipliers, same order as val_grads
+        penalty: float
+            The penalty for violating constraints. Think of this as the
+            size of the update made when solving for lagrange multipliers=
+        """
+        self.objective = objective
+        self.constraints = constraints
+        self.constraint_vals = constraint_vals
+        self.multipliers = initial_multipliers
+        self.penalty = penalty
+
+        # init f and g
+        self.f = 0
+        self.g = 0
+        self.cost = []
+
+    def refresh(self):
+        self.f = 0
+        self.g = 0
+
+    def fg(self, x):
+        """
+        Compute value and grad for a function with constraints weighted
+        by lagrange multipliers
+        """
+
+        # reset the f, g values
+        self.refresh()
+        
+        # Evaluate the objective function
+        f, g = self.objective.fg(x)
+
+        # Evaluate the constraints
+        constraint_f = 0
+        constraint_g = 0
+        for opt, con, val in zip(self.constraints, self.constraint_vals, self.multipliers):
+            
+            # Evaluate function and gradient for constraint
+            _f, _g = opt.fg(x)
+
+            # Subtract off constraint to get degree of violation
+            h = _f - con
+
+            # Add to objective function
+            f += val * h + (self.penalty / 2) * h ** 2
+            
+            # Add to gradient
+            g += (val + self.penalty * h) * g
+
+        self.f = f
+        self.g = g
+        self.cost.append(self.f)
+
+        return self.f, self.g
+    
+
 class PAPLCOptimizer:
     """An apodized pupil coronagraph optimizer, pupil is phase,
-    FPM and LS are fixed
+    FPM and LS are= fixed
 
     """
     def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx, fpm, ls,
@@ -146,7 +218,11 @@ class PAPLCOptimizer:
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float32)
 
-        if center_wavelength is None:
+        self.val_grads = val_grads
+        self.initial_multipliers = initial_multipliers
+        self.penalty = penalty
+
+    if center_wavelength is None:
             self.c_wvl = wvl
 
         if activation is None:
