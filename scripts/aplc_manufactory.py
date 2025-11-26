@@ -37,27 +37,27 @@ from prysm.x.optym import (
 )
 
 from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
-from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
+from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer, BinarizationPenalty
 
 
 # --- USER INPUT DESIGN PARAMS HERE
-USE_GPU = True # Use GPU for the optimization
+USE_GPU = False # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.350 # microns
-IMG_NPIX = 256 + 128
+IMG_NPIX = (256 + 128) // 2
 IWA = 6
 OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
-BANDWIDTH = 10 # percent
-NWVLS = 3
-OVERSAMPLE = 8 # pix per lam/D
+BANDWIDTH = .10 # percent
+NWVLS = 1
+OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100
+MAX_ITERS = 100_00
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
 THROUGHPUT_RELATIVE_WEIGHT =  1e-12 # 1e-15 # relative weight of the throughput optimization
@@ -116,7 +116,7 @@ ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_rat
 
 
 # Break hermetian symmetry with a little bit of random noise
-noisy = np.random.random(aperture.shape) * aperture / 1000
+noisy = 0 * np.random.random(aperture.shape) * aperture / 1000
 optlist = []
 for wave in band:
     aplc = APLCOptimizer(amp = aperture - noisy,
@@ -139,7 +139,10 @@ throughput = ThroughputOptimizer(amp=aperture-noisy,
                                  relative_weight=THROUGHPUT_RELATIVE_WEIGHT * NWVLS)
 
 throughput.set_optimization_method(zonal=True)
-optlist.append(throughput)
+
+binary = BinarizationPenalty(weight=1e-5)
+# optlist.append(throughput)
+optlist.append(binary)
 
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
@@ -350,7 +353,9 @@ from poi.processing import azimuthal_average
 
 # get radial
 masked_contrast = contrast_onax * dh
-radial_profile, bins = azimuthal_average(masked_contrast.get(), angle_range=[AZMIN, AZMAX])
+if hasattr(masked_contrast, "get"):
+    masked_contrast = masked_contrast.get()
+radial_profile, bins = azimuthal_average(masked_contrast, angle_range=[AZMIN, AZMAX])
 x_axis = tnp.ones_like(radial_profile) # just get array size
 dx_ld = 1/OVERSAMPLE # pixelscale in lambda/D
 x_ticks = [dx_ld*i for i in bins]
