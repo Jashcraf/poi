@@ -1,6 +1,7 @@
 from prysm.mathops import np, fft
 from prysm.propagation import focus_fixed_sampling, focus_fixed_sampling_backprop
 from prysm import coordinates, geometry
+from scipy.optimize import minimize
 
 class ImgSamplingSpec:
     """Specification for image plane sampling.
@@ -137,7 +138,7 @@ class BinarizationPenalty:
 
 
 class AugmentedLagrangian:
-    def __init__(self, objective, constraints, constraint_vals, initial_multipliers, penalty=10):
+    def __init__(self, objective, constraints, constraint_vals, initial_multipliers, x0, penalty=10, options=None):
         """
         Optimization wrapper that uses the Augmented Lagrangian Method
         to iteratively solve for the optimal lagrange multipliers of 
@@ -153,20 +154,46 @@ class AugmentedLagrangian:
             will have associated constraints, given by constraint_vals.
         initial_multipliers: list of float
             Initial set of lagrange multipliers, same order as val_grads
+        x0: ndarray
+            Initial guess for optimizer to run
         penalty: float
             The penalty for violating constraints. Think of this as the
-            size of the update made when solving for lagrange multipliers=
+            size of the update made when solving for lagrange multipliers
+        options: dict
+            Options dictionary to pass to the L-BFGS-B optimizer
         """
         self.objective = objective
         self.constraints = constraints
         self.constraint_vals = constraint_vals
         self.multipliers = initial_multipliers
         self.penalty = penalty
+        self.rho = penalty # this gets dynamically updated
+        self.options = options
+
+        # Init variables
+        self.x0 = x0
+        self.x = x0 # this gets updated for every call to step
 
         # init f and g
         self.f = 0
         self.g = 0
         self.cost = []
+    
+    def _setup_multipliers(self):
+        h_initial = np.array([h.fg(self.x)[0] for h in self.constraints])
+
+        # Get the gradient
+        f, g = self.objective.fg(self.x)
+        f_scale = np.linalg.norm(g)
+
+        for i, h_val in enumerate(h_initial):
+            h, grad_h = self.constraints[i].fg(self.x)
+            h_scale = np.linalg.norm(grad_h)
+
+            if h_scale > 0:
+                self.multipliers[i] = f_scale / h_scale
+            else:
+                self.multipliers[i] = 0
 
     def refresh(self):
         self.f = 0
@@ -184,9 +211,6 @@ class AugmentedLagrangian:
         # Evaluate the objective function
         f, g = self.objective.fg(x)
 
-        # Evaluate the constraints
-        constraint_f = 0
-        constraint_g = 0
         for opt, con, val in zip(self.constraints, self.constraint_vals, self.multipliers):
             
             # Evaluate function and gradient for constraint
@@ -196,17 +220,50 @@ class AugmentedLagrangian:
             h = _f - con
 
             # Add to objective function
-            f += val * h + (self.penalty / 2) * h ** 2
+            f += val * h + (self.rho / 2) * h ** 2
             
             # Add to gradient
-            g += (val + self.penalty * h) * g
+            g += (val + self.penalty * h) * _g
 
         self.f = f
         self.g = g
-        self.cost.append(self.f)
 
         return self.f, self.g
-    
+
+    def step(self):
+        """
+        Runs an iteration of the augmented lagrangian method
+        """
+        
+        print(f"Beginning Minimization Step")
+
+        # NOTE that this seeds the optimization with the results of the prior loop, using updated
+        # lagrange multipliers - this is crucial for efficiency
+        results = minimize(self.fg, self.x, method="L-BFGS-B", jac=True, options=self.options, bounds=[(0., 1.)]*len(self.x0))
+        self.latest_message = results.message
+        print(f"Minimization Step completed with \n {self.latest_message}")
+        self.x = results.x
+
+        # Update the lagrange multipliers
+        cost = 0
+        for i, (opt, con) in enumerate(zip(self.constraints, self.constraint_vals)):
+            
+            # Evaluate function and gradient for constraint
+            _f, _g = opt.fg(self.x)
+
+            # Subtract off constraint to get degree of violation
+            h = _f - con
+            
+            # Change in lagrange multiplier is given by how violated the constraint is
+            self.multipliers[i] += self.rho * h
+            
+            # Update current cost
+            cost += _f
+        
+        # Update the penalty
+        self.rho *= self.penalty
+        self.cost.append(cost)
+
 
 class PAPLCOptimizer:
     """An apodized pupil coronagraph optimizer, pupil is phase,
@@ -222,8 +279,8 @@ class PAPLCOptimizer:
         self.initial_multipliers = initial_multipliers
         self.penalty = penalty
 
-    if center_wavelength is None:
-            self.c_wvl = wvl
+        if center_wavelength is None:
+                self.c_wvl = wvl
 
         if activation is None:
             self.activation = Dummy(1)
@@ -494,13 +551,14 @@ class APLCOptimizer:
             method='mdft')
 
         I = np.abs(D)**2
-        # I = I / self.contrast_norm
-        E = np.sum((I[self.dh] - self.dh_target)**2) * self.weight
+        N = I / self.contrast_norm
+        E = np.sum((N[self.dh] - self.dh_target)**2) * self.weight
 
         self.aplc = aplc
         self.I = I
+        self.N = N
         self.E = E
-        self.cost.append(np.mean(I[self.dh]))
+        self.cost.append(np.mean(N[self.dh]))
 
         # the fields
         self.b = b
@@ -518,9 +576,9 @@ class APLCOptimizer:
 
     def rev(self, x):
         self.update(x)
-        Ibar = np.zeros(self.dh.shape, dtype=np.float32)
-        Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target) * self.weight
-        # Ibar = Ibar / self.contrast_norm
+        Nbar = np.zeros(self.dh.shape, dtype=np.float32)
+        Nbar[self.dh] = 2*(self.N[self.dh] - self.dh_target) * self.weight
+        Ibar = Nbar / self.contrast_norm
         Dbar = 2 * Ibar * self.D
 
         # backprop from image to lyot stop
@@ -634,10 +692,12 @@ class ThroughputOptimizer:
         c = self.ls[self.amp_select] * b[self.amp_select]
         # c = b[self.amp_select]
 
-        I = np.abs(c)**2
+        #I = np.abs(c)**2
+        I = c / self.amp[self.amp_select] # make throughput sampling-independent
+
         # Iinv = I**-1
         # E = np.sum(I)
-        E = -np.sum(I)
+        E = -1 * np.sum(I)
 
         self.aplc = aplc
         self.I = I
@@ -660,11 +720,12 @@ class ThroughputOptimizer:
         # Iinvbar = self.Iinv * self.eta
         # Ibar = -1 * ((self.Iinv.conj()) ** -2) * Iinvbar
         Ibar = -1 * self.I * self.eta
-        cbar = 2 * Ibar * self.c
+        cbar = Ibar / self.amp[self.amp_select]
+        #cbar = 2 * Ibar * self.c
 
         # backprop lyot stop application
         # bbar = self.ls.conj()[self.amp_select] * cbar
-        bbar = cbar
+        bbar = cbar * self.ls[self.amp_select]
         aplcbar = np.real(bbar)
 
         if not self.zonal:
