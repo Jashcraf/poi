@@ -41,13 +41,13 @@ from poi.aplc_design import (
         APLCOptimizer,
         APLCWrapper,
         ThroughputOptimizer,
+        CoreThroughputOptimizer,
         BinarizationPenalty,
         AugmentedLagrangian
 )
 
-
 # --- USER INPUT DESIGN PARAMS HERE
-USE_GPU = False # Use GPU for the optimization
+USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.350 # microns
@@ -110,8 +110,8 @@ if np.__name__ == "cupy":
     psf = (psf_scalar / psf_scalar.max()).get()
 else:
     psf = psf_scalar / psf_scalar.max()
-plt.imshow(psf, norm=LogNorm())
-plt.colorbar(label="Normalized Intensity")
+# plt.imshow(psf, norm=LogNorm())
+# plt.colorbar(label="Normalized Intensity")
 
 iss = ImgSamplingSpec(IMG_NPIX, lambd / OVERSAMPLE, lambd)
 focal_plane_mask = annular_mask(iss, FPM_IWA, FPM_OWA, theta_min=AZMIN, theta_max=AZMAX)
@@ -119,13 +119,15 @@ focal_plane_mask += np.fliplr(focal_plane_mask)
 dh = annular_mask(iss, IWA, OWA, theta_min=AZMIN, theta_max=AZMAX)
 dh = dh + np.fliplr(dh)
 ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_ratio=LS_OBSCURATION_RATIO)
-
+core_mask = inner_core_mask(iss, 0.7)
 
 # Break hermetian symmetry with a little bit of random noise
-noisy = 0 * np.random.random(aperture.shape) * aperture / 1000
+noisy = np.random.random(aperture.shape) * aperture / 100
 optlist = []
+starting_amp = (aperture - noisy)
+
 for wave in band:
-    aplc = APLCOptimizer(amp = aperture - noisy,
+    aplc = APLCOptimizer(amp=aperture,
                         amp_dx=pupil_dx,
                         efl=EFL,
                         wvl=wave,
@@ -139,56 +141,74 @@ for wave in band:
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
 
-throughput = ThroughputOptimizer(amp=aperture-noisy,
-                                 wvl=WVL,
-                                 basis=None,
-                                 ls=ls_mask,
-                                 relative_weight=1)
+throughput = CoreThroughputOptimizer(amp=aperture,
+                                    amp_dx=pupil_dx,
+                                    efl=EFL,
+                                    wvl=wave,
+                                    basis=None,
+                                    window=core_mask,
+                                    dh_dx=img_dx,
+                                    fpm=focal_plane_mask,
+                                    ls=ls_mask,
+                                    relative_weight=1)
 
-throughput.set_optimization_method(zonal=True)
-
-binary = BinarizationPenalty(weight=1e-4)
-#optlist.append(throughput)
 
 # optimization wrapper that sums the gradients and objective functions
 contrast_constraint = APLCWrapper(optlist=optlist)
+if hasattr(starting_amp, "get"):
+    starting_amp = starting_amp.get()
+    amp_select = aplc.amp_select.get()
+else:
+    amp_select = aplc.amp_select
 
 optimize = AugmentedLagrangian(
         objective=throughput,
         constraints=[contrast_constraint],
-        constraint_vals=[1e-13],
-        initial_multipliers=[1],
-        x0=np.ones_like(aplc.amp[aplc.amp_select]),
+        constraint_vals=[1e-10],
+        initial_multipliers=[0], # 1e12 didn't get to right contrast, a little under 1e-8
+        x0=starting_amp[amp_select],
         penalty=10,
-        options={"maxiter":1000, "disp":1, "memory":5, "ftol":1e-15, "gtol":1e-15}
 )
+
 multipliers = []
 function_value = []
 
 # Re-scale the lagrange multipliers to be proportional to the objective function
-optimize._setup_multipliers()
+#optimize._setup_multipliers()
 
-for i in range(50):
-    print(f"Beginning Iteration {i}")
-    optimize.step()
-    multipliers.append(optimize.multipliers[0])
-    optimize.penalty *= 1 # cool down the penalty
-    print(f"Lagrange Multipliers = {optimize.multipliers}")
-    print(f"Function Value = {optimize.f}")
-    print(f"Gradient Value = {optimize.g}")
+# I'm curious about what softmax looks like
+# plt.figure()
+# plt.subplot(121)
+# plt.title("Contrast")
+# plt.imshow(optimize.constraints[0].optlist[0].N, norm=LogNorm())
+# plt.colorbar()
+# plt.subplot(122)
+# plt.title("Softmax Gradient")
+# plt.imshow(optimize.constraints[0].optlist[0].Nbar / dh)
+# plt.colorbar()
+# plt.show()
 
+cost = []
+for i in range(10):
+    print(f"Starting Iteration {i}")
+    optimize.step(maxiter=10000)
+    multipliers.append(tnp.float64(optimize.multipliers[0]))
+    cost.append(optimize.cost[-1])
 
-multipliers = np.asarray(multipliers)
-
-positive_multipliers = np.copy(multipliers)
+multipliers = tnp.asarray(multipliers)
+positive_multipliers = tnp.copy(multipliers)
 positive_multipliers[multipliers < 0] = 0
 
-negative_multipliers = np.copy(multipliers)
+negative_multipliers = tnp.copy(multipliers)
 negative_multipliers[multipliers >= 0] = 0
+
+if hasattr(multipliers, "get"):
+    positive_multipliers = positive_multipliers.get()
+    negative_multipliers = negative_multipliers.get()
 
 plt.figure()
 plt.plot(positive_multipliers, marker="o", label="Positive, Contrast", color="r")
-plt.plot(np.abs(negative_multipliers), marker="o", label="Negative, Contrast", color="b")
+plt.plot(tnp.abs(negative_multipliers), marker="o", label="Negative, Contrast", color="b")
 plt.title("Lagrange Multiplier v.s. Iteration")
 plt.xlabel("Outer Loop Iteration")
 plt.ylabel("Lagrange Multiplier")
@@ -196,16 +216,20 @@ plt.yscale("log")
 #plt.ylim(1e-5, multipliers.max())
 plt.legend()
 
-cost_function = np.asarray(optimize.cost)
+cost_function = np.asarray(cost)
 positive_cost = np.copy(cost_function)
 positive_cost[cost_function < 0] = 0
 
 negative_cost = np.copy(cost_function)
 negative_cost[cost_function < 0] = 0
 
+if hasattr(cost_function, "get"):
+    positive_cost = positive_cost.get()
+    negative_cost = negative_cost.get()
+
 plt.figure()
-plt.plot(positive_cost, marker="o", label="Positive Cost Function", color="r")
-plt.plot(np.abs(negative_cost), marker="o", label="Negative Cost Function", color="b")
+plt.plot(tnp.abs(positive_cost), marker="o", label="Positive Cost Function", color="r")
+plt.plot(tnp.abs(negative_cost), marker="o", label="Negative Cost Function", color="b")
 plt.title("Cost Function v.s. Iteration")
 plt.xlabel("Outer Loop Iteration")
 plt.ylabel("|Cost|")

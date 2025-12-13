@@ -41,7 +41,7 @@ from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer, Bin
 
 
 # --- USER INPUT DESIGN PARAMS HERE
-USE_GPU = False # Use GPU for the optimization
+USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.350 # microns
@@ -60,7 +60,7 @@ LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil ra
 MAX_ITERS = 100_00
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
-THROUGHPUT_RELATIVE_WEIGHT =  1e-12 # 1e-15 # relative weight of the throughput optimization
+THROUGHPUT_RELATIVE_WEIGHT =  1e-15 # 1e-15 # relative weight of the throughput optimization
 # ---
 
 if USE_GPU:
@@ -128,7 +128,8 @@ for wave in band:
                         dh_target=0, # allows for specific contrast targeting, 0 just means "make it dark pls"
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
-                        ls=ls_mask)
+                        ls=ls_mask,
+                        weight=1000)
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
 
@@ -139,10 +140,7 @@ throughput = ThroughputOptimizer(amp=aperture-noisy,
                                  relative_weight=THROUGHPUT_RELATIVE_WEIGHT * NWVLS)
 
 throughput.set_optimization_method(zonal=True)
-
-binary = BinarizationPenalty(weight=1e-5)
-# optlist.append(throughput)
-optlist.append(binary)
+optlist.append(throughput)
 
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
@@ -154,7 +152,7 @@ else:
     x0 = tnp.ones(aplc.amp.shape, dtype=float)[aplc.amp_select]
 
 # Dry-run to debug
-opt_contrast_throughput.fg(x0)
+# opt_contrast_throughput.fg(x0)
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,

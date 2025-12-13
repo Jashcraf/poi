@@ -1,4 +1,4 @@
-import numpy as np
+import numpy as tnp
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
@@ -13,6 +13,8 @@ from prysm.coordinates import make_xy_grid, cart_to_polar
 from prysm.polynomials import noll_to_nm, hopkins, zernike_nm_seq as zernike_nm_sequence
 from prysm.propagation import focus_fixed_sampling
 from prysm.x.polarization import linear_polarizer, jones_to_mueller
+from prysm.mathops import np, set_backend_to_cupy
+##  set_backend_to_cupy()
 
 # Pound the poi
 from poi.phase_retrieval import PZPhaseRetrieval, ParallelADPhaseRetrieval
@@ -20,15 +22,16 @@ from poi.phase_retrieval import PZPhaseRetrieval, ParallelADPhaseRetrieval
 # Load the pupil
 NMODES = 37
 LAMBDA_M = 550e-9
-WAVE_MAG = 100
+WAVE_MAG = 10e-6
 IMG_DX = 1
 IMG_NPIX = 256
-CGISIM_PATH = Path.home() / "Downloads/roman_preflight_proper_public_v2.0.1_python/roman_preflight_proper/preflight_data/hlc_20190210b"
-POLABS_PATH = Path.home() / "Downloads/roman_preflight_proper_public_v2.0.1_python/roman_preflight_proper/preflight_data/pol"
+CGISIM_PATH = Path.home() / "roman_preflight_proper/roman_preflight_proper/preflight_data/hlc_20190210b"
+POLABS_PATH = Path.home() / "roman_preflight_proper/roman_preflight_proper/preflight_data/pol"
 roman_pupil = fits.getdata(CGISIM_PATH / "pupil.fits")
 roman_pupil_amplitude = fits.getdata(POLABS_PATH / "preflight_pol_amp.fits")
 roman_pupil_phase = fits.getdata(POLABS_PATH / "preflight_pol_pha.fits")
 roman_pupil_hdu = fits.open(POLABS_PATH / "preflight_pol_amp.fits")
+
 
 # Load the Jones pupils
 polpth = str(POLABS_PATH / "preflight_pol")
@@ -37,8 +40,13 @@ amp_j12, phs_j12 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=-3)
 amp_j11, phs_j11 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=5)
 amp_j21, phs_j21 = polab(polpth, LAMBDA_M, roman_pupil.shape[0], condition=6)
 
-PHASE_SCALE = 10
+PHASE_SCALE = 1
 kvec = 2 * np.pi / LAMBDA_M
+
+# cupy support
+amp_j11, amp_j12, amp_j21, amp_j22 = np.array(amp_j11), np.array(amp_j12), np.array(amp_j21), np.array(amp_j22)
+phs_j11, phs_j12, phs_j21, phs_j22 = np.array(phs_j11), np.array(phs_j12), np.array(phs_j21), np.array(phs_j22)
+roman_pupil = np.array(roman_pupil)
 
 jones_pupil = np.array([
     [amp_j11 * np.exp(1j * kvec * phs_j11*PHASE_SCALE), amp_j12 * np.exp(1j * kvec * phs_j12 * PHASE_SCALE)],
@@ -51,15 +59,13 @@ for i in range(2):
     for j in range(2):
 
         J = jones_pupil[i, j] / roman_pupil
-        ax[i, j].imshow(np.abs(J), vmin=0.98, vmax=1, cmap="inferno")
-        ax[i, j+2].imshow(np.angle(J) / roman_pupil, vmin=-LAMBDA_M/WAVE_MAG, vmax=LAMBDA_M/WAVE_MAG, cmap="RdBu_r")
-        average_phase += np.angle(J)
+        
+        if hasattr(J, "get"):
+            J = J.get()
 
-# Get the average retardation
-plt.figure()
-plt.title("Average Phase solution")
-plt.imshow(average_phase / roman_pupil, cmap="RdBu_r")
-plt.colorbar()
+        ax[i, j].imshow(tnp.abs(J), vmin=0.98, vmax=1, cmap="inferno")
+        ax[i, j+2].imshow(tnp.angle(J) / roman_pupil, vmin=-LAMBDA_M/WAVE_MAG, vmax=LAMBDA_M/WAVE_MAG, cmap="RdBu_r")
+        average_phase += tnp.angle(J)
 
 # Convert to prysm-friendly units
 LAMBDA_M *= 1e6
@@ -76,9 +82,10 @@ def create_defocus_aberration(defocus_waves, Npup=amp_j11.shape[0]):
     return defocus_aberration
 
 # Construct the PSF
+roman_pupil = np.asarray(roman_pupil)
 
 # Init the vector phase retrieval
-x0 = np.random.random(4 * NMODES) * 1e-10
+x0 = np.random.random(4 * NMODES) * 1e-1
 
 # Construct a Zernike basis
 x, y = make_xy_grid(roman_pupil.shape, diameter=2)
@@ -87,9 +94,10 @@ r, t = cart_to_polar(x, y)
 nms = [noll_to_nm(i) for i in range(2, NMODES+2)]
 basis = list(zernike_nm_sequence(nms, r, t))
 masked_basis = [b * roman_pupil for b in basis]
+masked_basis = np.asarray(masked_basis)
 
-defocus_waves = [0, 3]
-polarizer_angles = [0]
+defocus_waves = [0, -4.2]
+polarizer_angles = [0, 90, 45, 135]
 stokes_vectors = [
     np.array([1, 0, 0, 0]),
 ]
@@ -102,7 +110,7 @@ for stokes in stokes_vectors:
             # Construct the defocus aberration 
             defocus_phase = create_defocus_aberration(defocus)
             defocus_phasor = np.exp(1j * defocus_phase)
-
+            
             # Construct the polarizer
             pol = linear_polarizer(theta=np.radians(polang))
             pol = np.eye(2)
@@ -142,7 +150,7 @@ for stokes in stokes_vectors:
                 amp_dx=2400 / roman_pupil.shape[0],
                 efl=20e3, # TODO: Check this
                 wvl=LAMBDA_M,
-                basis=basis,
+                basis=masked_basis,
                 target=image,
                 img_dx=IMG_DX,
                 defocus_waves=-defocus,
@@ -156,10 +164,17 @@ for stokes in stokes_vectors:
 
 pzad_list = ParallelADPhaseRetrieval(optlist)
 
+
 f, g = pzad.fg(x0)
-tol = 1e-50
-results = minimize(pzad_list.fg, x0, jac=True, method="L-BFGS-B",
-                   options={"maxiter": 100, "ftol":tol, "gtol":tol})
+tol = 1e-14
+
+if hasattr(f, "get"):
+    val_grad = lambda x: pzad_list.fg(x).get()
+else:
+    val_grad = lambda x: pzad_list.fg(x)
+
+results = minimize(val_grad, x0, jac=True, method="L-BFGS-B",
+                   options={"maxiter": 1000, "ftol":tol, "gtol":tol, "disp":1})
 print(results)
 
 # Construct Jones pupil from results
@@ -205,12 +220,14 @@ for i in range(2):
     for j in range(2):
 
         J = Jones_result[i, j]
-        im = ax[i, j].imshow(np.abs(J), cmap="inferno")
+        if hasattr(J, "get"):
+            J = J.get()
+        im = ax[i, j].imshow(tnp.abs(J), cmap="inferno")
         div = make_axes_locatable(ax[i, j])
         cax = div.append_axes("right", size="7%", pad="2%")
         fig.colorbar(im, cax=cax)
         
-        im = ax[i, j+2].imshow(np.angle(J), cmap="RdBu_r")
+        im = ax[i, j+2].imshow(tnp.angle(J), cmap="RdBu_r")
         div = make_axes_locatable(ax[i, j+2])
         cax = div.append_axes("right", size="7%", pad="2%")
         fig.colorbar(im, cax=cax)
@@ -219,16 +236,31 @@ for idx in [0, -1]:
     plt.figure(figsize=[10, 5])
     plt.subplot(121)
     plt.title("Reference PSF")
-    plt.imshow(pzad_list.optlist[idx].D, norm=LogNorm())
+    
+    refpsf = pzad_list.optlist[idx].D
+    modpsf = pzad_list.optlist[idx].E
+
+    if hasattr(refpsf, "get"):
+        refpsf = refpsf.get()
+    
+    if hasattr(modpsf, "get"):
+        modpsf = modpsf.get()
+    
+    plt.imshow(refpsf, norm=LogNorm())
     plt.colorbar()
     plt.subplot(122)
     plt.title("Model PSF")
-    plt.imshow(pzad_list.optlist[idx].E, norm=LogNorm())
+    plt.imshow(modpsf, norm=LogNorm())
     plt.colorbar()
 
 plt.figure()
 for opt in pzad_list.optlist:
-    plt.plot(opt.cost, label=f"pol={opt.polarizer_angle}, defocus={opt.defocus}")
+    cost = opt.cost
+
+    if hasattr(cost, "get"):
+        cost = cost.get()
+
+    plt.plot(cost, label=f"pol={opt.polarizer_angle}, defocus={opt.defocus}")
 
 plt.ylabel("Mean Squared Error")
 plt.xlabel("Iteration")

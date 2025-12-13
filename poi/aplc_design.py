@@ -1,7 +1,11 @@
 from prysm.mathops import np, fft
 from prysm.propagation import focus_fixed_sampling, focus_fixed_sampling_backprop
 from prysm import coordinates, geometry
+from prysm.x.optym import F77LBFGSB
 from scipy.optimize import minimize
+import numpy as tnp
+from tqdm import tqdm
+from time import sleep
 
 class ImgSamplingSpec:
     """Specification for image plane sampling.
@@ -16,6 +20,19 @@ class ImgSamplingSpec:
     def from_N_lamD_px_per_lamD(cls, N, lamD, px_per_lamD):
         dx = lamD/px_per_lamD
         return cls(N=N, dx=dx, lamD=lamD)
+
+def log_sum_exp(x):
+    """
+    LogSumExp function, a smooth approximation to max()
+    """
+    return np.log(np.sum(np.exp(x)))
+
+def softmax(x):
+    """
+    Softmax function, happens to be
+    gradient of log_sum_exp
+    """
+    return np.exp(x) / np.sum(np.exp(x))
 
 # create the core mask
 def inner_core_mask(iss, iwa):
@@ -175,8 +192,7 @@ class AugmentedLagrangian:
         self.x = x0 # this gets updated for every call to step
 
         # init f and g
-        self.f = 0
-        self.g = 0
+        self.refresh() 
         self.cost = []
     
     def _setup_multipliers(self):
@@ -206,7 +222,7 @@ class AugmentedLagrangian:
         """
 
         # reset the f, g values
-        self.refresh()
+        self.x = x
         
         # Evaluate the objective function
         f, g = self.objective.fg(x)
@@ -217,45 +233,70 @@ class AugmentedLagrangian:
             _f, _g = opt.fg(x)
 
             # Subtract off constraint to get degree of violation
-            h = _f - con
+            c = _f - con
 
-            # Add to objective function
-            f += val * h + (self.rho / 2) * h ** 2
-            
-            # Add to gradient
-            g += (val + self.penalty * h) * _g
+            if c <= val / self.rho:
+                
+                # Add to objective function
+                f += -1 * val * c + (self.rho / 2) * c ** 2
+                
+                # Add to gradient
+                g += (-1 * val + self.rho * c) * _g
 
+            elif c > val / self.rho:
+                
+                # Add to objective function
+                f += -1 * val ** 2 / self.rho
+
+                # Function is constant here, so nothing to add to gradient
         self.f = f
         self.g = g
 
         return self.f, self.g
 
-    def step(self):
+    def step(self, memory=10, maxiter=10_000):
         """
         Runs an iteration of the augmented lagrangian method
         """
+        if hasattr(self.x, "get"):
+            self.x = self.x.get()
         
-        print(f"Beginning Minimization Step")
+        opt = F77LBFGSB(self.fg,
+                        self.x,
+                        memory=memory,
+                        upper_bounds=tnp.ones(self.x.shape),
+                        lower_bounds=tnp.zeros(self.x.shape))
+        
+        print(f"Running L-BFGS-B with maxiter={maxiter} and memory={memory}")
+        print("Starting values of ")
+        
+        f, g = self.fg(self.x)
+        print(f"f={f}")
+        print(f"g={g}")
+        print(f"lambda={self.multipliers[0]}") 
+        print(f"rho={self.rho}") 
+        try:
+            for _ in tqdm(range(maxiter)):
+                opt.step()
+        except StopIteration:
+            pass
 
-        # NOTE that this seeds the optimization with the results of the prior loop, using updated
-        # lagrange multipliers - this is crucial for efficiency
-        results = minimize(self.fg, self.x, method="L-BFGS-B", jac=True, options=self.options, bounds=[(0., 1.)]*len(self.x0))
-        self.latest_message = results.message
-        print(f"Minimization Step completed with \n {self.latest_message}")
-        self.x = results.x
+        # Update with coronagraph solution
+        self.x = self.objective.aplc[self.objective.amp_select]
 
         # Update the lagrange multipliers
-        cost = 0
-        for i, (opt, con) in enumerate(zip(self.constraints, self.constraint_vals)):
+        cost = 0 # init cost
+
+        for i, (opt, con, val) in enumerate(zip(self.constraints, self.constraint_vals, self.multipliers)):
             
             # Evaluate function and gradient for constraint
             _f, _g = opt.fg(self.x)
 
             # Subtract off constraint to get degree of violation
-            h = _f - con
-            
+            c = _f - con
+
             # Change in lagrange multiplier is given by how violated the constraint is
-            self.multipliers[i] += self.rho * h
+            self.multipliers[i] = max(0, val - self.rho * c)
             
             # Update current cost
             cost += _f
@@ -263,6 +304,126 @@ class AugmentedLagrangian:
         # Update the penalty
         self.rho *= self.penalty
         self.cost.append(cost)
+
+
+class PAPCOptimizer:
+    """An apodized pupil coronagraph optimizer, pupil is phase,
+    There is no focal plane mask or lyot stop
+
+    """
+    def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx,
+                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None):
+        if initial_amplitude is None:
+            aplc = np.zeros(amp.shape, dtype=np.float64)
+
+        if center_wavelength is None:
+                self.c_wvl = wvl
+
+        if activation is None:
+            self.activation = Dummy(1)
+
+        else:
+            self.activation = activation
+
+
+        self.amp = amp
+        self.amp_select = self.amp > 1e-9
+        self.amp_dx = amp_dx
+        self.efl = efl
+        self.wvl = wvl
+        self.basis = basis
+        self.dh = dark_hole
+        self.dh_dx = dh_dx
+        self.dh_target = dh_target
+        self.aplc = aplc
+        self.zonal = True
+        self.cost = []
+
+    def set_optimization_method(self, zonal=False):
+        self.zonal = zonal
+
+    def update(self, x):
+        x = np.array(x)
+        if not self.zonal:
+            self.phs = np.tensordot(self.basis, x, axes=(0,0))
+        else:
+            # activate
+            self.phs = np.zeros(self.amp.shape, dtype=np.float64)
+            self.phs[self.amp_select] = self.activation.forward(x)
+
+        # impose constraints
+        W = (2 * np.pi / self.wvl) * self.phs
+        b = self.amp * np.exp(1j * W)
+
+        # prop to focal plane mask
+        B = focus_fixed_sampling(
+            wavefunction=b,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.dh.shape,
+            shift=(0, 0),
+            method='mdft')
+
+
+        I = np.abs(B)**2
+        E = np.sum((I[self.dh] - self.dh_target)**2)
+
+        self.W = W
+        self.I = I
+        self.E = E
+        self.cost.append(np.mean(I[self.dh]))
+
+        # the fields
+        self.b = b
+        self.B = B
+
+        return
+
+    def fwd(self, x):
+        self.update(x)
+        return self.E
+
+    def rev(self, x):
+        self.update(x)
+        Ibar = np.zeros(self.dh.shape, dtype=np.float64)
+        Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target)
+
+        Bbar = 2 * Ibar * self.B
+
+        # backprop from image to pupil plane
+        bbar = focus_fixed_sampling_backprop(
+            wavefunction=Bbar,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.aplc.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        Wbar = 2 * np.pi / self.wvl * np.imag(bbar * np.conj(self.b))
+
+        if not self.zonal:
+            abar = np.tensordot(self.basis, Wbar)
+
+        self.Ibar = Ibar
+        self.bbar = bbar
+        self.Bbar = Bbar
+
+        if not self.zonal:
+            self.abar = abar
+            return self.abar
+        else:
+            xbar = Wbar[self.amp_select]
+            abar = self.activation.backprop(xbar) #* xbar
+            return abar
+
+    def fg(self, x):
+        g = self.rev(x)
+        f = self.E
+        return f, g
 
 
 class PAPLCOptimizer:
@@ -273,7 +434,7 @@ class PAPLCOptimizer:
     def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx, fpm, ls,
                  dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None):
         if initial_amplitude is None:
-            aplc = np.zeros(amp.shape, dtype=np.float32)
+            aplc = np.zeros(amp.shape, dtype=np.float64)
 
         self.val_grads = val_grads
         self.initial_multipliers = initial_multipliers
@@ -313,7 +474,7 @@ class PAPLCOptimizer:
             self.phs = np.tensordot(self.basis, x, axes=(0,0))
         else:
             # activate
-            self.phs = np.zeros(self.amp.shape, dtype=np.float32)
+            self.phs = np.zeros(self.amp.shape, dtype=np.float64)
             self.phs[self.amp_select] = self.activation.forward(x)
 
         # impose constraints
@@ -383,7 +544,7 @@ class PAPLCOptimizer:
 
     def rev(self, x):
         self.update(x)
-        Ibar = np.zeros(self.dh.shape, dtype=np.float32)
+        Ibar = np.zeros(self.dh.shape, dtype=np.float64)
         Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target)
 
         Dbar = 2 * Ibar * self.D
@@ -464,7 +625,7 @@ class APLCOptimizer:
                  dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None,
                  weight=1):
         if initial_amplitude is None:
-            aplc = np.zeros(amp.shape, dtype=np.float32)
+            aplc = np.zeros(amp.shape, dtype=np.float64)
 
         if center_wavelength is None:
             self.c_wvl = wvl
@@ -501,7 +662,7 @@ class APLCOptimizer:
             self.aplc = np.tensordot(self.basis, x, axes=(0,0))
         else:
             # activate
-            self.aplc = np.zeros(self.amp.shape, dtype=np.float32)
+            self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
             self.aplc[self.amp_select] = self.activation.forward(x)
 
         # impose constraints
@@ -552,13 +713,18 @@ class APLCOptimizer:
 
         I = np.abs(D)**2
         N = I / self.contrast_norm
-        E = np.sum((N[self.dh] - self.dh_target)**2) * self.weight
+
+        # Trying smooth maximum
+        E = -log_sum_exp(N[self.dh] - self.dh_target)
+
+        # Original error function is MSE:
+        #E = np.sum((N[self.dh] - self.dh_target)**2) * self.weight
 
         self.aplc = aplc
         self.I = I
         self.N = N
         self.E = E
-        self.cost.append(np.mean(N[self.dh]))
+        self.cost.append(np.mean(N[self.dh] - self.dh_target))
 
         # the fields
         self.b = b
@@ -576,8 +742,11 @@ class APLCOptimizer:
 
     def rev(self, x):
         self.update(x)
-        Nbar = np.zeros(self.dh.shape, dtype=np.float32)
-        Nbar[self.dh] = 2*(self.N[self.dh] - self.dh_target) * self.weight
+        Nbar = np.zeros(self.dh.shape, dtype=np.float64)
+        Nbar[self.dh] = -softmax(self.N[self.dh] - self.dh_target)
+         
+        # Original backprop of mean squared error
+        #Nbar[self.dh] = 2*(self.N[self.dh] - self.dh_target) * self.weight
         Ibar = Nbar / self.contrast_norm
         Dbar = 2 * Ibar * self.D
 
@@ -632,6 +801,7 @@ class APLCOptimizer:
         self.Cbar = Cbar
         self.dbar = dbar
         self.Dbar = Dbar
+        self.Nbar = Nbar
         self.aplcbar = aplcbar
 
         if not self.zonal:
@@ -659,7 +829,7 @@ class ThroughputOptimizer:
 
     def __init__(self, amp, wvl, basis, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1):
         if initial_amplitude is None:
-            aplc = np.zeros(amp.shape, dtype=np.float32)
+            aplc = np.zeros(amp.shape, dtype=np.float64)
 
         if center_wavelength is None:
             self.c_wvl = wvl
@@ -758,7 +928,7 @@ class CoreThroughputOptimizer:
     """
     def __init__(self, amp, amp_dx, efl, wvl, basis, window, dh_dx, fpm, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1):
         if initial_amplitude is None:
-            aplc = np.ones(amp.shape, dtype=np.float32)
+            aplc = np.ones(amp.shape, dtype=np.float64)
 
         if center_wavelength is None:
             self.c_wvl = wvl
@@ -777,6 +947,7 @@ class CoreThroughputOptimizer:
         self.window = window # window the size of the PSF core
         self.cost = []
         self.eta = relative_weight
+        self.total_energy = np.sum(self.amp)
 
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
@@ -793,7 +964,11 @@ class CoreThroughputOptimizer:
         # impose constraints
         aplc = np.real(self.aplc)
         b = self.amp * aplc
-        c = self.ls * b
+
+        # Noticing that the parts behind the Lyot Stop have zero gradient,
+        # therefore, they only control contrast. What if we maximize the
+        # pre-FPM core throughput?
+        c = b #self.ls * b
 
         # prop to focal plane mask
         C = focus_fixed_sampling(
@@ -807,12 +982,14 @@ class CoreThroughputOptimizer:
             method='mdft')
 
         I = np.abs(C)**2
-        E = np.sum((I[self.window])**2)
-
+        J = I / self.total_energy
+        E = np.sum((J[self.window])**2)
+        
         self.aplc = aplc
         self.I = I
+        self.J = J
         self.E = -E * self.eta
-        self.cost.append(np.mean(I[self.window]))
+        self.cost.append(np.mean(J[self.window]))
 
         # save the fields
         self.b = b
@@ -827,7 +1004,10 @@ class CoreThroughputOptimizer:
 
     def rev(self, x):
         self.update(x)
-        Ibar = - 2 * self.window * self.I * self.eta
+        Jbar = - 2 * self.window * self.J * self.eta
+        Ibar = Jbar / self.total_energy
+        
+        #Ibar = - 2 * self.window * self.I * self.eta
         Cbar = 2 * Ibar * self.C
 
         # backprop from image to lyot stop
@@ -842,7 +1022,10 @@ class CoreThroughputOptimizer:
             method='mdft')
 
         # backprop lyot stop application
-        bbar = self.ls.conj() * cbar
+        # Noticing that the parts behind the Lyot Stop have zero gradient,
+        # therefore, they only control contrast. What if we maximize the
+        # pre-FPM core throughput?
+        bbar = self.amp * cbar #self.ls.conj() * cbar
         aplcbar = np.real(bbar)
 
         if not self.zonal:
