@@ -167,7 +167,8 @@ optimize = AugmentedLagrangian(
         constraint_vals=[1e-10],
         initial_multipliers=[0], # 1e12 didn't get to right contrast, a little under 1e-8
         x0=starting_amp[amp_select],
-        penalty=10,
+        penalty=2,
+        periodic_relaxation=10,
 )
 
 multipliers = []
@@ -189,11 +190,23 @@ function_value = []
 # plt.show()
 
 cost = []
-for i in range(10):
+constraint_violation = []
+for i in range(14):
     print(f"Starting Iteration {i}")
-    optimize.step(maxiter=10000)
+    optimize.step(maxiter=10_000, memory=10)
     multipliers.append(tnp.float64(optimize.multipliers[0]))
-    cost.append(optimize.cost[-1])
+
+    # Get the cost
+    _f, _g = optimize.fg(optimize.x)
+    cost.append(_f)
+
+    # Eval constraint violation
+    for opt, con, val in zip(optimize.constraints, optimize.constraint_vals, optimize.multipliers):
+
+        _f, _g = opt.fg(optimize.x)
+        c = _f - con
+
+    constraint_violation.append(c)
 
 multipliers = tnp.asarray(multipliers)
 positive_multipliers = tnp.copy(multipliers)
@@ -217,15 +230,20 @@ plt.yscale("log")
 plt.legend()
 
 cost_function = np.asarray(cost)
-positive_cost = np.copy(cost_function)
-positive_cost[cost_function < 0] = 0
-
-negative_cost = np.copy(cost_function)
-negative_cost[cost_function < 0] = 0
 
 if hasattr(cost_function, "get"):
-    positive_cost = positive_cost.get()
-    negative_cost = negative_cost.get()
+    cost_function = cost_function.get()
+
+positive_cost = tnp.copy(cost_function)
+positive_cost[cost_function < 0] = 0
+
+negative_cost = tnp.copy(cost_function)
+negative_cost[cost_function < 0] = 0
+
+print("cost f positive")
+print(tnp.abs(positive_cost))
+print("cost f negative")
+print(tnp.abs(negative_cost))
 
 plt.figure()
 plt.plot(tnp.abs(positive_cost), marker="o", label="Positive Cost Function", color="r")
@@ -236,6 +254,18 @@ plt.ylabel("|Cost|")
 plt.yscale("log")
 #plt.ylim(cost_function.min(), cost_function.max())
 plt.legend()
+
+constraint_violation = np.asarray(constraint_violation)
+
+if hasattr(constraint_violation, "get"):
+    constraint_violation = constraint_violation.get()
+
+plt.figure()
+plt.plot(tnp.abs(constraint_violation), marker="o", color="r")
+plt.title("Constraint Violation v.s. Iteration")
+plt.xlabel("Outer Loop Iteration")
+plt.yscale("log")
+plt.ylabel("|Violation|")
 # starting guess is a filled aperture
 # if np.__name__ == "cupy":
 #     x0 = tnp.ones(aplc.amp.get().shape, dtype=float)[aplc.amp_select.get()]

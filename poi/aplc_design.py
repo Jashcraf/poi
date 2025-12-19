@@ -7,6 +7,10 @@ import numpy as tnp
 from tqdm import tqdm
 from time import sleep
 
+from .propagation import ft_fwd, ft_rev
+
+
+
 class ImgSamplingSpec:
     """Specification for image plane sampling.
     Taken from the equivalent class at github.com/brandondube/dygdug
@@ -21,18 +25,18 @@ class ImgSamplingSpec:
         dx = lamD/px_per_lamD
         return cls(N=N, dx=dx, lamD=lamD)
 
-def log_sum_exp(x):
+def log_sum_exp(x, alpha=1):
     """
     LogSumExp function, a smooth approximation to max()
     """
-    return np.log(np.sum(np.exp(x)))
+    return 1/alpha * np.log(np.sum(np.exp(alpha * x)))
 
-def softmax(x):
+def softmax(x, alpha=1):
     """
     Softmax function, happens to be
     gradient of log_sum_exp
     """
-    return np.exp(x) / np.sum(np.exp(x))
+    return np.exp(alpha * x) / np.sum(np.exp(alpha * x))
 
 # create the core mask
 def inner_core_mask(iss, iwa):
@@ -155,7 +159,7 @@ class BinarizationPenalty:
 
 
 class AugmentedLagrangian:
-    def __init__(self, objective, constraints, constraint_vals, initial_multipliers, x0, penalty=10, options=None):
+    def __init__(self, objective, constraints, constraint_vals, initial_multipliers, x0, penalty=10, options=None, periodic_relaxation=None):
         """
         Optimization wrapper that uses the Augmented Lagrangian Method
         to iteratively solve for the optimal lagrange multipliers of 
@@ -178,6 +182,9 @@ class AugmentedLagrangian:
             size of the update made when solving for lagrange multipliers
         options: dict
             Options dictionary to pass to the L-BFGS-B optimizer
+        periodic_relaxation: int
+            The RMS of a gaussian kernel, in samples to smooth the solution by.
+            If None, periodic relaxation is ignored.
         """
         self.objective = objective
         self.constraints = constraints
@@ -194,7 +201,19 @@ class AugmentedLagrangian:
         # init f and g
         self.refresh() 
         self.cost = []
-    
+        self.periodic_relaxation = periodic_relaxation
+
+        # Optionally init periodic relaxation
+        if self.periodic_relaxation is not None:
+
+            # Get the amplitude shape
+            shape = self.objective.amp.shape[0]
+            x = np.linspace(-shape / 2, shape / 2, self.objective.amp.shape[0])
+            x, y = np.meshgrid(x, x)
+            r = np.hypot(x, y)
+            self.kernel = np.exp(-(r / periodic_relaxation) ** 2)
+
+
     def _setup_multipliers(self):
         h_initial = np.array([h.fg(self.x)[0] for h in self.constraints])
 
@@ -258,6 +277,19 @@ class AugmentedLagrangian:
         """
         Runs an iteration of the augmented lagrangian method
         """
+        
+        # Optionally apply periodic relaxation to 'kick' out of
+        # present solution space. Needs to happen prior to the 
+        # 'inner problem' so that the solution can be optimized
+        if self.periodic_relaxation is not None:
+            
+            # To the frequency domain jimbo
+            aperture = np.copy(self.objective.amp)
+            aperture[self.objective.amp_select] = self.x
+            signal = ft_fwd(aperture) * ft_fwd(self.kernel)
+            aperture = np.abs(ft_rev(signal))
+            self.x = aperture[self.objective.amp_select]
+        
         if hasattr(self.x, "get"):
             self.x = self.x.get()
         
@@ -304,6 +336,7 @@ class AugmentedLagrangian:
         # Update the penalty
         self.rho *= self.penalty
         self.cost.append(cost)
+
 
 
 class PAPCOptimizer:
@@ -713,9 +746,10 @@ class APLCOptimizer:
 
         I = np.abs(D)**2
         N = I / self.contrast_norm
+        self.alpha = 1 / np.max(N[self.dh] - self.dh_target)
 
         # Trying smooth maximum
-        E = -log_sum_exp(N[self.dh] - self.dh_target)
+        E = -log_sum_exp(N[self.dh] - self.dh_target, alpha=self.alpha)
 
         # Original error function is MSE:
         #E = np.sum((N[self.dh] - self.dh_target)**2) * self.weight
@@ -743,7 +777,7 @@ class APLCOptimizer:
     def rev(self, x):
         self.update(x)
         Nbar = np.zeros(self.dh.shape, dtype=np.float64)
-        Nbar[self.dh] = -softmax(self.N[self.dh] - self.dh_target)
+        Nbar[self.dh] = -softmax(self.N[self.dh] - self.dh_target, alpha=self.alpha)
          
         # Original backprop of mean squared error
         #Nbar[self.dh] = 2*(self.N[self.dh] - self.dh_target) * self.weight
