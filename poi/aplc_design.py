@@ -8,89 +8,316 @@ from tqdm import tqdm
 from time import sleep
 
 from .propagation import ft_fwd, ft_rev
+from .cost_functions import MeanSquaredError
 
 
 
-class ImgSamplingSpec:
-    """Specification for image plane sampling.
-    Taken from the equivalent class at github.com/brandondube/dygdug
-    """
-    def __init__(self, N, dx, lamD):
+class BaseAPLC:
+    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
+                 basis, initial_amplitude, activation, weight,
+                 cost_function, include_fpm, alpha):
+        """
+        Base class for optimizing Apodized Pupil Lyot Coronagraphs,
+        not intended to be used directly. Instead, use
+
+        'AmplitudeAPLC', or
+        'PhaseAPLC'
+
+        which inherit from this class
+
+        Parameters
+        ----------
+        amp: ndarray
+            entrance pupil amplitude mask
+        amp_dx: float
+            size of 'amp' samples in milimeters
+        efl: float
+            effective focal length of the beam focusing onto the coronagraph
+            mask, milimeters
+        wvl: float
+            wavelength of light, microns
+        dark_hole: ndarray
+            Array of the same size / sampling as the focal plane
+            defining the region to make dark. Alternatively, this
+            can be a circular window if 'CoreThroughput' is used as
+            the cost function
+        fpm: ndarray
+            focal plane complex amplitude mask
+        ls: ndarray
+            Lyot stop complex amplitude mask
+        basis: list of ndarray or None, optional
+            Modal basis with which to optimize the coronagraph. If None,
+            defaults to 'zonal' optimization where each sample is optimized
+            independently
+        initial_amplitude: ndarray, optional
+            Initial apodizer amplitude to supply to the solver. If None,
+            defaults to an array of ones.
+        activation: class, optional
+            Activation function to apply from poi.activation or
+            prysm.x.optym
+        weight: float, optional
+            Relative weight to apply to the optimization, defaults to 1
+        cost_function: Class, member of poi.cost_functions, optional
+            Object with .forward() and .reverse() methods for computing
+            the forward cost and gradient of the final image-plane array.
+            If None, defaults to MeanSquaredError.
+        alpha: float, optional
+            "Steepness" parameter for some cost functions
+        """
+
+        # Define initial amplitude if not present
+        if initial_amplitude is None:
+            aplc = np.ones(amp.shape, dtype=np.float64)
+        
+        # Set up activation function
+        if activation is None:
+            self.activation = Dummy(1)
+        else:
+            self.activation = activation
+
+
+        self.amp = amp
+        self.amp_select = self.amp > 1e-9
+        self.amp_dx = amp_dx
+        self.efl = efl
+        self.wvl = wvl
+        self.basis = basis
+        self.dh = dark_hole
+        self.dh_dx = dh_dx
+        self.aplc = aplc
+        self.zonal = True
+        self.fpm = fpm
+        self.ls = ls
+        self.cost = []
+        self.weight = weight
+        self.alpha = alpha
+        self.dh_target = 0
+        self.include_fpm = include_fpm
+
+        if cost_function is None:
+            self.cost_function = MeanSquaredError(target=self.dh_target)
+        else:
+            self.cost_function = cost_function
+
+    def set_optimization_method(self, zonal=False):
+        self.zonal = zonal
+
+    def update(self, x):
+        
+        # Convert lists to arrays if that's how they are supplied
+        x = np.asarray(x)
+
+        if not self.zonal:
+            self.aplc = np.tensordot(self.basis, x, axes=(0,0))
+        else:
+            # activate
+            self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
+            self.aplc[self.amp_select] = self.activation.forward(x)
+        
+        # NOTE: This function is not defined in this base class because
+        # of how different the PhaseAPLC and AmplitudeAPLC behave. See
+        # Their respective definitions for the forward and adjoint of
+        # '_setup_coefficients()'
+        self._setup_coefficients()
+
+        # Apply entrance pupil
+        b = self.amp * self.aplc
+
+        # prop to focal plane mask
+        B = focus_fixed_sampling(
+            wavefunction=b,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.dh.shape,
+            shift=(0, 0),
+            method='mdft')
+        
+        # Get contrast normalization (approx)
+        self.contrast_norm = (np.abs(B)**2).max()
+
+        # apply focal plane mask
+        if self.include_fpm:
+            C = B * self.fpm
+        else:
+            C = B
+
+        # prop to lyot stop
+        c = focus_fixed_sampling(
+            wavefunction=C,
+            input_dx=self.dh_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.amp_dx,
+            output_samples=self.amp.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        # apply lyot stop
+        d = c * self.ls
+
+        # prop to coronagraphic image
+        D = focus_fixed_sampling(
+            wavefunction=d,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.dh.shape,
+            shift=(0, 0),
+            method='mdft')
+
+        I = np.abs(D)**2
+        N = I / self.contrast_norm
+        
+        # Evaluate cost function
+        # Multiplying is a little weird here because MSE gets 
+        # kind of thrown off. But this makes it compatible
+        # With core throughput optimization as well. Alternatively,
+        # We could have self.dh = the core mask?
+        E = self.cost_function.forward(N[self.dh])
+        E *= self.weight
+
+        self.I = I
         self.N = N
-        self.dx = dx
-        self.lamD = lamD
+        self.E = E
+        self.cost.append(self.E)
 
-    @classmethod
-    def from_N_lamD_px_per_lamD(cls, N, lamD, px_per_lamD):
-        dx = lamD/px_per_lamD
-        return cls(N=N, dx=dx, lamD=lamD)
+        # the intermediate fields
+        self.b = b
+        self.B = B
+        self.c = c
+        self.C = C
+        self.d = d
+        self.D = D
+        return
 
-def log_sum_exp(x, alpha=1):
-    """
-    LogSumExp function, a smooth approximation to max()
-    """
-    return 1/alpha * np.log(np.sum(np.exp(alpha * x)))
+    def fwd(self, x):
+        self.update(x)
+        return self.E
 
-def softmax(x, alpha=1):
-    """
-    Softmax function, happens to be
-    gradient of log_sum_exp
-    """
-    return np.exp(alpha * x) / np.sum(np.exp(alpha * x))
+    def rev(self, x):
+        
+        # Evaluate forward model
+        self.update(x)
+        
+        # Backpropagate image intensity to image field gradient
+        Nbar = np.zeros(self.dh.shape, dtype=np.float64)
+        Nbar[self.dh] = self.cost_function.reverse(self.N[self.dh])
+        Ibar = Nbar / self.contrast_norm * self.weight
+        Dbar = 2 * Ibar * self.D
 
-# create the core mask
-def inner_core_mask(iss, iwa):
+        # backprop from image to lyot stop
+        dbar = focus_fixed_sampling_backprop(
+            wavefunction=Dbar,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.aplc.shape,
+            shift=(0, 0),
+            method='mdft')
 
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
-    r, t = coordinates.cart_to_polar(x, y)
-    iwa = iwa * iss.lamD
-    mask = geometry.circle(iwa, r)
+        # backprop lyot stop application - conjugate permits complex ls
+        cbar = self.ls.conj() * dbar
 
-    return mask
+        # backprop from before stop to focal plane mask
+        Cbar = focus_fixed_sampling_backprop(
+            wavefunction=cbar,
+            input_dx=self.dh_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.amp_dx,
+            output_samples=self.I.shape, 
+            shift=(0, 0),
+            method='mdft')
+
+        # backprop fpm application
+        if self.include_fpm:
+            Bbar = self.fpm.conj() * Cbar
+        else:
+            Bbar = Cbar
+
+        # backprop from before fpm to pupil apodizer
+        self.bbar = focus_fixed_sampling_backprop(
+            wavefunction=Bbar,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.aplc.shape,
+            shift=(0, 0),
+            method='mdft')
+        
+        # See note in self.update about this function definition
+        # tl;dr, don't use BaseAPLC by itself
+        self._setup_coefficients_backprop()
+        
+        # Backpropagate to modal basis if appropriate
+        if not self.zonal:
+            abar = np.tensordot(self.basis, aplcbar)
+        
+        # The intermediate gradients
+        self.Ibar = Ibar
+        self.Bbar = Bbar
+        self.cbar = cbar
+        self.Cbar = Cbar
+        self.dbar = dbar
+        self.Dbar = Dbar
+        self.Nbar = Nbar
+
+        if not self.zonal:
+            self.abar = abar
+            return self.abar
+
+        else:
+            xbar = self.aplcbar[self.amp_select]
+            abar = self.activation.backprop(xbar)
+            return abar
+
+    def fg(self, x):
+        g = self.rev(x)
+        f = self.E
+        return f, g
 
 
-def knife_edge_mask(iss, iwa):
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
-    iwa = iwa * iss.lamD
-    mask = x > iwa
+class AmplitudeAPLC(BaseAPLC):
 
-    return mask
-
-
-def circular_mask(iss, iwa):
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
-    r, t = coordinates.cart_to_polar(x, y)
-    iwa = iwa * iss.lamD
-    mask = r > iwa
-
-    return mask
+    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
+                 basis=None, initial_amplitude=None, activation=None, weight=1,
+                 cost_function=None, include_fpm=True, alpha=None):
 
 
-def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None):
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
-    r, t = coordinates.cart_to_polar(x, y)
-    iwa = iwa * iss.lamD
-    owa = owa * iss.lamD
-    mask = r > iwa
-    mask[r > owa] = 0
-    
-    if theta_min != None and theta_max != None:
-        mask[t < np.radians(theta_min)] = 0
-        mask[t > np.radians(theta_max)] = 0
+        super().__init__(amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
+                       basis, initial_amplitude, activation, weight,
+                       cost_function, include_fpm, alpha)
 
-    return mask
+    def _setup_coefficients(self):
+        self.aplc = np.real(self.aplc)
+
+    def _setup_coefficients_backprop(self):
+        self.aplcbar = np.real(self.bbar)
 
 
-def lyot_mask(pupil_npix, pupil_dx, frac, obscuration_ratio=0.0):
+class PhaseAPLC(BaseAPLC):
 
-    x, y = coordinates.make_xy_grid(pupil_npix, dx=pupil_dx)
-    r, t = coordinates.cart_to_polar(x, y)
-    rnorm = r / (r.max() * np.sqrt(2))
-    ls = np.zeros_like(x)
-    ls[rnorm < frac/2] = 1
-    ls[rnorm < frac/2 * obscuration_ratio] = 0
+    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
+                 basis=None, initial_amplitude=None, activation=None, weight=1,
+                 include_fpm=True):
 
-    return ls
+        super().__init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
+                       basis=basis, initial_amplitude=initial_amplitude,
+                       activation=activation, weight=weight,
+                       include_fpm=include_fpm)
+
+    def _setup_coefficients(self):
+        self.W = (2 * np.pi / self.wvl) * self.aplc
+        self.aplc = np.exp(1j * self.W)
+
+    def _setup_coefficients_backprop(self):
+        self.aplcbar = np.imag(self.bbar * np.conj(self.b))
+        self.aplcbar *= 2 * np.pi / self.wvl 
 
 
 class Sigmoid:
