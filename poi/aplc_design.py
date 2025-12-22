@@ -282,6 +282,202 @@ class BaseAPLC:
         return f, g
 
 
+class BaseSPC:
+    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
+                 basis, initial_amplitude, activation, weight,
+                 cost_function, include_fpm, alpha):
+        """
+        Base class for optimizing Shaped Pupil Coronagraphs,
+        which do not have focal plane masks or Lyot stops
+        not intended to be used directly. Instead, use
+
+        'AmplitudeSPC', or
+        'PhaseSPC'
+
+        which inherit from this class
+
+        Parameters
+        ----------
+        amp: ndarray
+            entrance pupil amplitude mask
+        amp_dx: float
+            size of 'amp' samples in milimeters
+        efl: float
+            effective focal length of the beam focusing onto the coronagraph
+            mask, milimeters
+        wvl: float
+            wavelength of light, microns
+        dark_hole: ndarray
+            Array of the same size / sampling as the focal plane
+            defining the region to make dark. Alternatively, this
+            can be a circular window if 'CoreThroughput' is used as
+            the cost function
+        basis: list of ndarray or None, optional
+            Modal basis with which to optimize the coronagraph. If None,
+            defaults to 'zonal' optimization where each sample is optimized
+            independently
+        initial_amplitude: ndarray, optional
+            Initial apodizer amplitude to supply to the solver. If None,
+            defaults to an array of ones.
+        activation: class, optional
+            Activation function to apply from poi.activation or
+            prysm.x.optym
+        weight: float, optional
+            Relative weight to apply to the optimization, defaults to 1
+        cost_function: Class, member of poi.cost_functions, optional
+            Object with .forward() and .reverse() methods for computing
+            the forward cost and gradient of the final image-plane array.
+            If None, defaults to MeanSquaredError.
+        alpha: float, optional
+            "Steepness" parameter for some cost functions
+        """
+
+        # Define initial amplitude if not present
+        if initial_amplitude is None:
+            aplc = np.ones(amp.shape, dtype=np.float64)
+        
+        # Set up activation function
+        if activation is None:
+            self.activation = Dummy(1)
+        else:
+            self.activation = activation
+
+
+        self.amp = amp
+        self.amp_select = self.amp > 1e-9
+        self.amp_dx = amp_dx
+        self.efl = efl
+        self.wvl = wvl
+        self.basis = basis
+        self.dh = dark_hole
+        self.dh_dx = dh_dx
+        self.aplc = aplc
+        self.zonal = True
+        self.cost = []
+        self.weight = weight
+        self.alpha = alpha
+        self.dh_target = 0
+        self.include_fpm = include_fpm
+
+        if cost_function is None:
+            self.cost_function = MeanSquaredError(target=self.dh_target)
+        else:
+            self.cost_function = cost_function
+
+    def set_optimization_method(self, zonal=False):
+        self.zonal = zonal
+
+    def update(self, x):
+        
+        # Convert lists to arrays if that's how they are supplied
+        x = np.asarray(x)
+
+        if not self.zonal:
+            self.aplc = np.tensordot(self.basis, x, axes=(0,0))
+        else:
+            # activate
+            self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
+            self.aplc[self.amp_select] = self.activation.forward(x)
+        
+        # NOTE: This function is not defined in this base class because
+        # of how different the PhaseAPLC and AmplitudeAPLC behave. See
+        # Their respective definitions for the forward and adjoint of
+        # '_setup_coefficients()'
+        self._setup_coefficients()
+
+        # Apply entrance pupil
+        b = self.amp * self.aplc
+
+        # prop to focal plane mask
+        B = focus_fixed_sampling(
+            wavefunction=b,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.dh.shape,
+            shift=(0, 0),
+            method='mdft')
+        
+        # Get contrast normalization (approx)
+        self.contrast_norm = (np.abs(B)**2).max()
+
+        I = np.abs(B)**2
+        N = I / self.contrast_norm
+        
+        # Evaluate cost function
+        # Multiplying is a little weird here because MSE gets 
+        # kind of thrown off. But this makes it compatible
+        # With core throughput optimization as well. Alternatively,
+        # We could have self.dh = the core mask?
+        E = self.cost_function.forward(N[self.dh])
+        E *= self.weight
+
+        self.I = I
+        self.N = N
+        self.E = E
+        self.cost.append(self.E)
+
+        # the intermediate fields
+        self.b = b
+        self.B = B
+        return
+
+    def fwd(self, x):
+        self.update(x)
+        return self.E
+
+    def rev(self, x):
+        
+        # Evaluate forward model
+        self.update(x)
+        
+        # Backpropagate image intensity to image field gradient
+        Nbar = np.zeros(self.dh.shape, dtype=np.float64)
+        Nbar[self.dh] = self.cost_function.reverse(self.N[self.dh])
+        Ibar = Nbar / self.contrast_norm * self.weight
+        Bbar = 2 * Ibar * self.B
+
+        # backprop from before fpm to pupil apodizer
+        self.bbar = focus_fixed_sampling_backprop(
+            wavefunction=Bbar,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.aplc.shape,
+            shift=(0, 0),
+            method='mdft')
+        
+        # See note in self.update about this function definition
+        # tl;dr, don't use BaseAPLC by itself
+        self._setup_coefficients_backprop()
+        
+        # Backpropagate to modal basis if appropriate
+        if not self.zonal:
+            abar = np.tensordot(self.basis, aplcbar)
+        
+        # The intermediate gradients
+        self.Ibar = Ibar
+        self.Bbar = Bbar
+        self.bbar = bbar
+        self.Nbar = Nbar
+
+        if not self.zonal:
+            self.abar = abar
+            return self.abar
+
+        else:
+            xbar = self.aplcbar[self.amp_select]
+            abar = self.activation.backprop(xbar)
+            return abar
+
+    def fg(self, x):
+        g = self.rev(x)
+        f = self.E
+        return f, g
+
+
 class AmplitudeAPLC(BaseAPLC):
 
     def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
@@ -307,6 +503,44 @@ class PhaseAPLC(BaseAPLC):
                  include_fpm=True):
 
         super().__init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
+                       basis=basis, initial_amplitude=initial_amplitude,
+                       activation=activation, weight=weight,
+                       include_fpm=include_fpm)
+
+    def _setup_coefficients(self):
+        self.W = (2 * np.pi / self.wvl) * self.aplc
+        self.aplc = np.exp(1j * self.W)
+
+    def _setup_coefficients_backprop(self):
+        self.aplcbar = np.imag(self.bbar * np.conj(self.b))
+        self.aplcbar *= 2 * np.pi / self.wvl 
+
+
+class AmplitudeSPC(BaseSPC):
+
+    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
+                 basis=None, initial_amplitude=None, activation=None, weight=1,
+                 cost_function=None, include_fpm=True, alpha=None):
+
+
+        super().__init__(amp, amp_dx, efl, wvl, dark_hole, dh_dx,
+                       basis, initial_amplitude, activation, weight,
+                       cost_function, include_fpm, alpha)
+
+    def _setup_coefficients(self):
+        self.aplc = np.real(self.aplc)
+
+    def _setup_coefficients_backprop(self):
+        self.aplcbar = np.real(self.bbar)
+
+
+class PhaseSPC(BaseSPC):
+
+    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
+                 basis=None, initial_amplitude=None, activation=None, weight=1,
+                 include_fpm=True):
+
+        super().__init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
                        basis=basis, initial_amplitude=initial_amplitude,
                        activation=activation, weight=weight,
                        include_fpm=include_fpm)

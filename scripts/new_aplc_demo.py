@@ -22,7 +22,8 @@ from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
 from poi.aplc_design import AmplitudeAPLC, APLCWrapper
 from poi.cost_functions import (
     CoreThroughput,
-    LogSumExp
+    LogSumExp,
+    MeanSquaredError
 ) 
 
 # --- USER INPUT DESIGN PARAMS HERE
@@ -42,10 +43,11 @@ pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100_000
+MAX_ITERS = 100_00
 core_size = 0.7 # radius in lam/D
+TARGET_CONTRAST = 1e-10
 
-THROUGHPUT_RELATIVE_WEIGHT =  1e-7 # 1e-15 # relative weight of the throughput optimization
+THROUGHPUT_RELATIVE_WEIGHT =  1e-15 # 1e-15 # relative weight of the throughput optimization
 # ---
 
 if USE_GPU:
@@ -104,6 +106,10 @@ ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_rat
 noisy = 0 * np.random.random(aperture.shape) * aperture / 1000
 optlist = []
 for wave in band:
+
+    # Set up cost function
+    cost = MeanSquaredError(target=TARGET_CONTRAST)
+
     aplc = AmplitudeAPLC(amp = aperture - noisy,
                         amp_dx=pupil_dx,
                         efl=EFL,
@@ -112,7 +118,8 @@ for wave in band:
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=1)
+                        weight=1,
+                        cost_function=cost)
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
 
@@ -277,6 +284,7 @@ fx, fy = np.meshgrid(fx, fx)
 
 # 14 mins uh oh
 from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from tqdm import tqdm
 throughput = []
 
@@ -290,17 +298,22 @@ before, lyot_field, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=0,
 contrast_onax = coro / contrast_norm
 
 # Lyot Stop plot
-ax3.set_title('Lyot Field')
+ax3.set_title('PSF Morphology')
 if np.__name__ == "cupy":
-    ax3.imshow(lyot_field.get(), cmap='inferno', norm=LogNorm())
+    im = ax3.imshow(contrast_onax.get(), cmap='inferno', norm=LogNorm(vmax=1e-5, vmin=1e-11))
 else:
-    ax3.imshow(lyot_field, cmap='inferno', norm=LogNorm())
+    im = ax3.imshow(contrast_onax, cmap='inferno', norm=LogNorm(vmax=1e-5, vmin=1e-11))
 
 # Clear ticks
 ax3.set_xticks([])
 ax3.set_xticklabels([])
 ax3.set_yticks([])
 ax3.set_yticklabels([])
+
+# Set up colorbar
+div = make_axes_locatable(ax3)
+cax = div.append_axes("right", size="5%", pad=0.1)
+fig.colorbar(im, cax=cax)
 
 
 for i, ld in tqdm(enumerate(tilt_lds)):
