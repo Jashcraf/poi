@@ -42,10 +42,10 @@ pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100_00
+MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
-# 1e-11 produces good monochromatic designs
-THROUGHPUT_RELATIVE_WEIGHT =  1e-15 # 1e-15 # relative weight of the throughput optimization
+
+THROUGHPUT_RELATIVE_WEIGHT =  1e-7 # 1e-15 # relative weight of the throughput optimization
 # ---
 
 if USE_GPU:
@@ -112,7 +112,7 @@ for wave in band:
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=1e10)
+                        weight=1)
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
 
@@ -131,7 +131,7 @@ throughput = AmplitudeAPLC(amp = aperture - noisy,
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=1,
+                        weight=THROUGHPUT_RELATIVE_WEIGHT,
 
                         # The cost function is now altered to max core throughput
                         cost_function=core_throughput)
@@ -154,7 +154,7 @@ else:
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
-                memory=20, upper_bounds=tnp.ones(x0.shape),
+                memory=10, upper_bounds=tnp.ones(x0.shape),
                 lower_bounds=tnp.zeros(x0.shape))
 opt.iprint = 0
 
