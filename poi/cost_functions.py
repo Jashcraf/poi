@@ -47,22 +47,97 @@ class LogSumExp:
         self.alpha = alpha
 
     def forward(self, x):
-        return log_sum_exp(x - self.target, alpha=self.alpha)
+        return log_sum_exp(self.target - x, alpha=self.alpha)
 
     def reverse(self, x):
-        return softmax(x - self.target, alpha=self.alpha) 
+        return softmax(self.target - x, alpha=self.alpha) 
 
 
-class MeanSquaredError:
-    def __init__(self, target=0):
+class MaxContrast:
+    def __init__(self, target=0, alpha=1):
+        """
+        Targets maximum value, uses softmax to approximate gradient
+        """
         self.target = target
+        self.alpha = alpha
 
     def forward(self, x):
-        return np.mean((x - self.target) ** 2)
+        return np.max(self.target - x)
 
     def reverse(self, x):
-        return 2 * (x - self.target) / x.size
+        return softmax(self.target - x, alpha=self.alpha)
 
+
+class MeanSquaredErrorLinear:
+    def __init__(self, target=0, alpha=1.):
+        """Mean squared error cost function with a linear
+        penalty. Sign changes when constraint target is satisfied.
+        In english, this means you are asking the optimizer:
+        "Hey please get to 'target', but if you can do better, that's great"
+
+        Parameters
+        ----------
+        target: float
+            Target contrast. These are implicitly converted to squared unites.
+            If you give it 1e-2, it will target 1e-4 so that 1e-2 is achieved.
+        alpha: float
+            Weight to multiply constraint by. Can be negative
+            to flip the sign convention
+        """
+        self.target = target ** 2
+        self.alpha = alpha
+
+    def forward(self, x):
+        err = x
+        mse_mag = np.mean(err**2)
+        return (mse_mag - self.target) * self.alpha
+
+    def reverse(self, x):
+        err = x 
+        mse_grad = 2 * err / x.size 
+        return mse_grad * self.alpha 
+
+
+class MeanSquaredErrorQuadratic:
+    def __init__(self, target=0, alpha=1.):
+        """Mean squared error cost function with a linear
+        penalty. Sign changes when constraint target is satisfied
+        In english, this means you are asking the optimizer:
+        "Hey please get to 'target', but if you can do better, don't"
+
+        Parameters
+        ----------
+        target: float
+            Target contrast, not MSE units.
+        alpha: float
+            Weight to multiply constraint by. Can be negative
+            to flip the sign convention
+        """
+        self.target = target
+        self.alpha = alpha
+
+    def forward(self, x):
+        err = x - self.target
+        mse_mag = np.mean(err**2)
+        return mse_mag * self.alpha
+
+    def reverse(self, x):
+        err = x - self.target 
+        mse_grad = 2 * err / x.size 
+        return mse_grad * self.alpha 
+
+class PNorm:
+    def __init__(self, target=0, alpha=10):
+        self.target = target
+        self.alpha = alpha
+
+    def forward(self, x):
+        exponent = 1 / self.alpha
+        self.p_norm = (np.sum(x) ** self.alpha) ** exponent
+        return self.target - self.p_norm
+
+    def reverse(self, x):
+        return x ** (self.alpha - 1) / (self.p_norm ** (self.alpha-1)) 
 
 class CoreThroughput:
     def __init__(self, target=0):
@@ -89,7 +164,7 @@ class CoreThroughput:
             Image plane intensity
         """
 
-        return -1 * log_sum_exp(x - self.target)
+        return -1 * np.sum(x - self.target)
 
     def reverse(self, x):
         """
@@ -100,5 +175,5 @@ class CoreThroughput:
         x: ndarray
             Image plane intensity
         """
-        return -1 * softmax(x - self.target)
+        return -1 * (x - self.target)
 

@@ -6,10 +6,10 @@ from scipy.optimize import minimize
 import numpy as tnp
 from tqdm import tqdm
 from time import sleep
+import ipdb
 
 from .propagation import ft_fwd, ft_rev
-from .cost_functions import MeanSquaredError
-
+from .cost_functions import MeanSquaredErrorQuadratic as MeanSquaredError
 
 
 class BaseAPLC:
@@ -179,11 +179,34 @@ class BaseAPLC:
         E = self.cost_function.forward(N[self.dh])
         E *= self.weight
 
+        def plot_x():
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=[10, 5])
+            plt.subplot(121)
+            plt.imshow(self.amp.get(), cmap="grey")
+            plt.colorbar()
+            plt.subplot(122)
+            plt.imshow(self.aplc.get(), cmap="inferno")
+            plt.colorbar()
+            plt.show()
+        
+        def plot_n():
+            import matplotlib.pyplot as plt
+            from matplotlib.colors import LogNorm
+            plt.figure()
+            plt.imshow(N.get(), cmap="inferno", norm=LogNorm(vmin=1e-10, vmax=1))
+            plt.colorbar()
+            plt.show()
+
+        # Present for debugging, might have been the convolution
+        # ipdb.set_trace()
+        # print(f"Intermediate Cost = {E}")
+
         self.I = I
         self.N = N
         self.E = E
         self.cost.append(self.E)
-
+        
         # the intermediate fields
         self.b = b
         self.B = B
@@ -204,8 +227,12 @@ class BaseAPLC:
         
         # Backpropagate image intensity to image field gradient
         Nbar = np.zeros(self.dh.shape, dtype=np.float64)
+
+        # Backpropagation of cost function might be erroneous
         Nbar[self.dh] = self.cost_function.reverse(self.N[self.dh])
-        Ibar = Nbar / self.contrast_norm * self.weight
+        Nbar *= self.weight
+
+        Ibar = Nbar / self.contrast_norm
         Dbar = 2 * Ibar * self.D
 
         # backprop from image to lyot stop
@@ -620,7 +647,9 @@ class BinarizationPenalty:
 
 
 class AugmentedLagrangian:
-    def __init__(self, objective, constraints, constraint_vals, initial_multipliers, x0, penalty=10, options=None, periodic_relaxation=None):
+    def __init__(self, objective, constraints, constraint_vals,
+                 initial_multipliers, x0, penalty=10, options=None,
+                 periodic_relaxation=None):
         """
         Optimization wrapper that uses the Augmented Lagrangian Method
         to iteratively solve for the optimal lagrange multipliers of 
@@ -645,7 +674,8 @@ class AugmentedLagrangian:
             Options dictionary to pass to the L-BFGS-B optimizer
         periodic_relaxation: int
             The RMS of a gaussian kernel, in samples to smooth the solution by.
-            If None, periodic relaxation is ignored.
+            If None, periodic relaxation is ignored. This method is meant
+            only for Amplitude-type coronagraphs
         """
         self.objective = objective
         self.constraints = constraints
@@ -669,13 +699,17 @@ class AugmentedLagrangian:
 
             # Get the amplitude shape
             shape = self.objective.amp.shape[0]
-            x = np.linspace(-shape / 2, shape / 2, self.objective.amp.shape[0])
-            x, y = np.meshgrid(x, x)
-            r = np.hypot(x, y)
+            xx = np.linspace(-shape / 2, shape / 2, self.objective.amp.shape[0])
+            xx, yy = np.meshgrid(xx, xx)
+            r = np.hypot(xx, yy)
             self.kernel = np.exp(-(r / periodic_relaxation) ** 2)
 
 
     def _setup_multipliers(self):
+        """Optional method to scale mutlipliers by the gradient
+        of the constraint violation, though typically they start at
+        zero
+        """
         h_initial = np.array([h.fg(self.x)[0] for h in self.constraints])
 
         # Get the gradient
@@ -764,15 +798,24 @@ class AugmentedLagrangian:
         print("Starting values of ")
         
         f, g = self.fg(self.x)
+        
         print(f"f={f}")
         print(f"g={g}")
         print(f"lambda={self.multipliers[0]}") 
         print(f"rho={self.rho}") 
+        
         try:
             for _ in tqdm(range(maxiter)):
                 opt.step()
-        except StopIteration:
-            pass
+                
+                # Helps to break out
+                task_str = opt.task.tobytes().decode('utf-8').strip('\x00').strip()
+                print(task_str)
+                if 'CONVERGENCE' in task_str or 'STOP' in task_str:
+                    break
+            
+        except StopIteration as e:
+            final_result = e.value
 
         # Update with coronagraph solution
         self.x = self.objective.aplc[self.objective.amp_select]
@@ -787,10 +830,10 @@ class AugmentedLagrangian:
 
             # Subtract off constraint to get degree of violation
             c = _f - con
-
+            print(f"Constraint Violation = {c}")
             # Change in lagrange multiplier is given by how violated the constraint is
             self.multipliers[i] = max(0, val - self.rho * c)
-            
+
             # Update current cost
             cost += _f
         
@@ -806,7 +849,8 @@ class PAPCOptimizer:
 
     """
     def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx,
-                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None):
+                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None,
+                 activation=None):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float64)
 

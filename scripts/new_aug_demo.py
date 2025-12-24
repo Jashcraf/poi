@@ -19,13 +19,12 @@ from prysm.x.optym import (
 )
 
 from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
-from poi.aplc_design import AmplitudeAPLC, APLCWrapper
+from poi.aplc_design import AmplitudeAPLC, APLCWrapper, AugmentedLagrangian
 from poi.cost_functions import (
     CoreThroughput,
     LogSumExp,
     MeanSquaredErrorLinear,
-    MeanSquaredErrorQuadratic,
-    PNorm
+    MaxContrast
 ) 
 
 # --- USER INPUT DESIGN PARAMS HERE
@@ -45,11 +44,11 @@ pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100_00
+MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
 TARGET_CONTRAST = 1e-10
 
-THROUGHPUT_RELATIVE_WEIGHT =  1e-11 # 1e-15 # relative weight of the throughput optimization
+THROUGHPUT_RELATIVE_WEIGHT =  1e-15 # 1e-15 # relative weight of the throughput optimization
 # ---
 
 if USE_GPU:
@@ -105,12 +104,12 @@ ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_rat
 
 
 # Break hermetian symmetry with a little bit of random noise
-noisy = 0 * np.random.random(aperture.shape) * aperture / 1000
+noisy = np.random.random(aperture.shape) * aperture / 10
 optlist = []
 for wave in band:
 
     # Set up cost function
-    cost = MeanSquaredErrorQuadratic(target=TARGET_CONTRAST)
+    cost = MeanSquaredErrorLinear(target=TARGET_CONTRAST, alpha=-10.)
 
     aplc = AmplitudeAPLC(amp = aperture - noisy,
                         amp_dx=pupil_dx,
@@ -120,11 +119,14 @@ for wave in band:
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=1,
+                        weight=1.,
                         cost_function=cost)
 
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
+
+# optimization wrapper that sums the gradients and objective functions
+opt_contrast = APLCWrapper(optlist=optlist)
 
 # Set up CoreThroughput cost function
 core_mask = inner_core_mask(iss, core_size)
@@ -141,17 +143,14 @@ throughput = AmplitudeAPLC(amp = aperture - noisy,
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=THROUGHPUT_RELATIVE_WEIGHT,
+                        weight=1,
 
                         # The cost function is now altered to max core throughput
-                        cost_function=core_throughput)
+                        cost_function=core_throughput,
+                        include_fpm=False)
 
 throughput.set_optimization_method(zonal=True)
-optlist.append(throughput)
 
-
-# optimization wrapper that sums the gradients and objective functions
-opt_contrast_throughput = APLCWrapper(optlist=optlist)
 
 # starting guess is a filled aperture
 if np.__name__ == "cupy":
@@ -161,28 +160,112 @@ else:
 
 # Dry-run to debug
 # opt_contrast_throughput.fg(x0)
-
-# initialize the optimizer with box constraints
-opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
-                memory=10, upper_bounds=tnp.ones(x0.shape),
-                lower_bounds=tnp.zeros(x0.shape))
-opt.iprint = 0
+# Init the Augmented Lagrangian Optimizer
+optym = AugmentedLagrangian(objective=throughput,
+                            constraints=[opt_contrast],
+                            constraint_vals=[(0)],
+                            initial_multipliers=[0],
+                            x0=x0,
+                            penalty=10.,
+                            periodic_relaxation=None)
 
 # some timing
 t1 = time.perf_counter()
 
-# This is in a try-except block because the optimizer will
-# sometimes raise a StopIteration exception when it is done
-try:
-    for _ in tqdm(range(MAX_ITERS)):
-        opt.step()
-except StopIteration:
-    pass
+cost = []
+constraint_violation = []
+multipliers = []
+function_value = []
+penalties = []
+for i in range(25):
+    print(f"Starting Iteration {i}")
+    optym.step(maxiter=MAX_ITERS, memory=10)
+    multipliers.append(tnp.float64(optym.multipliers[0]))
+    penalties.append(tnp.float64(optym.rho))
+
+    # Get the cost
+    _f, _g = optym.fg(optym.x)
+    cost.append(_f)
+
+    # Eval constraint violation
+    for opt, con, val in zip(optym.constraints,
+                             optym.constraint_vals,
+                             optym.multipliers):
+
+        _f, _g = opt.fg(optym.x)
+        c = _f - con
+
+    constraint_violation.append(c)
+
+penalties = tnp.asarray(penalties)
+multipliers = tnp.asarray(multipliers)
+positive_multipliers = tnp.copy(multipliers)
+positive_multipliers[multipliers < 0] = 0
+
+negative_multipliers = tnp.copy(multipliers)
+negative_multipliers[multipliers >= 0] = 0
+
+if hasattr(multipliers, "get"):
+    positive_multipliers = positive_multipliers.get()
+    negative_multipliers = negative_multipliers.get()
+
+plt.figure()
+plt.plot(positive_multipliers, marker="o", label="Positive, Contrast", color="r")
+plt.plot(tnp.abs(negative_multipliers), marker="o", label="Negative, Contrast", color="b")
+plt.title("Lagrange Multiplier v.s. Iteration")
+plt.xlabel("Outer Loop Iteration")
+plt.ylabel("Lagrange Multiplier")
+plt.yscale("log")
+#plt.ylim(1e-5, multipliers.max())
+plt.legend()
+
+cost_function = np.asarray(cost)
+
+if hasattr(cost_function, "get"):
+    cost_function = cost_function.get()
+
+positive_cost = tnp.copy(cost_function)
+positive_cost[cost_function < 0] = 0
+
+negative_cost = tnp.copy(cost_function)
+negative_cost[cost_function < 0] = 0
+
+print("cost f positive")
+print(tnp.abs(positive_cost))
+print("cost f negative")
+print(tnp.abs(negative_cost))
+
+plt.figure()
+plt.plot(tnp.abs(positive_cost), marker="o", label="Positive Cost Function", color="r")
+plt.plot(tnp.abs(negative_cost), marker="o", label="Negative Cost Function", color="b")
+plt.title("Cost Function v.s. Iteration")
+plt.xlabel("Outer Loop Iteration")
+plt.ylabel("|Cost|")
+plt.yscale("log")
+#plt.ylim(cost_function.min(), cost_function.max())
+plt.legend()
+
+constraint_violation = np.asarray(constraint_violation)
+
+if hasattr(constraint_violation, "get"):
+    constraint_violation = constraint_violation.get()
+
+plt.figure()
+plt.plot(tnp.abs(constraint_violation), marker="o", color="r",
+         label=r"$c(x)$")
+plt.plot(tnp.abs(multipliers / penalties), marker="o", color="b",
+         label=r"$\lambda / \rho$")
+plt.title("Constraint Violation v.s. Iteration")
+plt.xlabel("Outer Loop Iteration")
+plt.yscale("log")
+plt.ylabel("|Violation|")
+plt.legend()
+
 print(f"Time to Optimizer for {MAX_ITERS}")
 print(time.perf_counter() - t1)
 
 newmask = aplc.amp
-newmask[aplc.amp_select] = opt.x
+newmask[aplc.amp_select] = optym.x
 
 plt.style.use("bmh")
 fig = plt.figure(figsize=[20,10])
