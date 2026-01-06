@@ -46,6 +46,7 @@ def _angular_spectrum_prop(field, transfer_function):
     forward = fft.fft2(field)
     return fft.ifft2(forward*transfer_function)
 
+
 def ft_fwd(x):
     """ 'focus' operator, wrapper for numpy fft that conserves energy
 
@@ -61,6 +62,7 @@ def ft_fwd(x):
     """
     return fft.ifftshift(fft.fft2(fft.fftshift(x), norm='ortho'))
 
+
 def ft_rev(x):
     """ 'unfocus' operator, wrapper for numpy fft that conserves energy
 
@@ -75,3 +77,39 @@ def ft_rev(x):
         unfocused field
     """
     return fft.ifftshift(fft.ifft2(fft.fftshift(x), norm='ortho'))
+
+
+def convolve_2d(x, kernel, normalize=True):
+    """Convolves x with kernel using ffts
+
+    Parameters
+    ----------
+    x: ndarray
+        signal to convolve
+    kernel: ndarray
+        kernel for convolution
+    normalize: bool
+        whether to maintain the energy of x in the
+        convolution, defaults to True
+
+    Returns
+    -------
+    ndarray
+        convolved signal
+
+    """
+
+    spectrum = ft_fwd(x)
+    kernelft = ft_fwd(kernel)
+    spectral_weights = ft_fwd(np.ones_like(x))
+
+    convolved = ft_rev(spectrum * kernelft)
+    weights = ft_rev(spectral_weights * kernelft)
+
+    if normalize:
+        convolved /= weights
+        convolved = np.abs(convolved)
+        convolved = np.clip(convolved, 0, 1)
+
+    return convolved
+

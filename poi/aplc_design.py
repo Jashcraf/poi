@@ -8,7 +8,7 @@ from tqdm import tqdm
 from time import sleep
 import ipdb
 
-from .propagation import ft_fwd, ft_rev
+from .propagation import ft_fwd, ft_rev, convolve_2d
 from .cost_functions import MeanSquaredErrorQuadratic as MeanSquaredError
 
 
@@ -703,8 +703,7 @@ class AugmentedLagrangian:
             xx, yy = np.meshgrid(xx, xx)
             r = np.hypot(xx, yy)
             self.kernel = np.exp(-(r / periodic_relaxation) ** 2)
-
-
+        
     def _setup_multipliers(self):
         """Optional method to scale mutlipliers by the gradient
         of the constraint violation, though typically they start at
@@ -766,7 +765,10 @@ class AugmentedLagrangian:
         self.f = f
         self.g = g
 
-        return self.f, self.g
+        if hasattr(f, "get"):
+            return self.f.get(), self.g.get()
+        else:
+            return self.f, self.g
 
     def step(self, memory=10, maxiter=10_000):
         """
@@ -781,44 +783,66 @@ class AugmentedLagrangian:
             # To the frequency domain jimbo
             aperture = np.copy(self.objective.amp)
             aperture[self.objective.amp_select] = self.x
-            signal = ft_fwd(aperture) * ft_fwd(self.kernel)
-            aperture = np.abs(ft_rev(signal))
+            
+            aperture = convolve_2d(aperture, self.kernel, normalize=True)
+
             self.x = aperture[self.objective.amp_select]
         
         if hasattr(self.x, "get"):
             self.x = self.x.get()
         
-        opt = F77LBFGSB(self.fg,
-                        self.x,
-                        memory=memory,
-                        upper_bounds=tnp.ones(self.x.shape),
-                        lower_bounds=tnp.zeros(self.x.shape))
+        # Prysm's more GPU-friendly method
+        # opt = F77LBFGSB(self.fg,
+        #                 self.x,
+        #                 memory=memory,
+        #                 upper_bounds=tnp.ones(self.x.shape),
+        #                 lower_bounds=tnp.zeros(self.x.shape))
         
+        # Progress bar my beloved
+        pbar = tqdm(total=self.options['maxiter'], desc="Coronagraph go brr")
+        
+        def callback(xk):
+            # Update with current function value
+            pbar.set_postfix({'f(x)': self.f})
+            pbar.update(1)
+
+        callback = None
+
+        # Define bounds for APLC
+        bounds = tnp.vstack([tnp.zeros(self.x.shape), tnp.ones(self.x.shape)]).T
+        
+        # Trying to work with scipy
+        results = minimize(self.fg, self.x, method="L-BFGS-B", jac=True,
+                           bounds=bounds, callback=callback,
+                           options=self.options)
+        self.x = results.x
+        print(results)
+        pbar.close()
+
         print(f"Running L-BFGS-B with maxiter={maxiter} and memory={memory}")
-        print("Starting values of ")
-        
+        print("Starting values of ") 
         f, g = self.fg(self.x)
-        
+         
         print(f"f={f}")
         print(f"g={g}")
         print(f"lambda={self.multipliers[0]}") 
         print(f"rho={self.rho}") 
         
-        try:
-            for _ in tqdm(range(maxiter)):
-                opt.step()
-                
-                # Helps to break out
-                task_str = opt.task.tobytes().decode('utf-8').strip('\x00').strip()
-                print(task_str)
-                if 'CONVERGENCE' in task_str or 'STOP' in task_str:
-                    break
-            
-        except StopIteration as e:
-            final_result = e.value
+        # try:
+        #     for _ in tqdm(range(maxiter)):
+        #         opt.step()
+        #         
+        #         # Helps to break out
+        #         task_str = opt.task.tobytes().decode('utf-8').strip('\x00').strip()
+        #         print(task_str)
+        #         if 'CONVERGENCE' in task_str or 'STOP' in task_str:
+        #             break
+        #     
+        # except StopIteration as e:
+        #     final_result = e.value
 
         # Update with coronagraph solution
-        self.x = self.objective.aplc[self.objective.amp_select]
+        # self.x = self.objective.aplc[self.objective.amp_select]
 
         # Update the lagrange multipliers
         cost = 0 # init cost

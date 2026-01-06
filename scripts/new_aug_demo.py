@@ -24,6 +24,7 @@ from poi.cost_functions import (
     CoreThroughput,
     LogSumExp,
     MeanSquaredErrorLinear,
+    MeanSquaredErrorQuadratic,
     MaxContrast
 ) 
 
@@ -37,8 +38,8 @@ IWA = 6
 OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
-BANDWIDTH = .10 # percent
-NWVLS = 1
+BANDWIDTH = 10 # percent
+NWVLS = 3
 OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
@@ -46,7 +47,7 @@ LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
 MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
-TARGET_CONTRAST = 1e-10
+TARGET_CONTRAST = 1e-20
 
 THROUGHPUT_RELATIVE_WEIGHT =  1e-15 # 1e-15 # relative weight of the throughput optimization
 # ---
@@ -109,7 +110,11 @@ optlist = []
 for wave in band:
 
     # Set up cost function
-    cost = MeanSquaredErrorLinear(target=TARGET_CONTRAST, alpha=-10.)
+    # Needs weight=-1
+    cost = MeanSquaredErrorLinear(target=TARGET_CONTRAST, alpha=1e15)
+    
+    # Needs weight=1
+    # cost = LogSumExp(target=TARGET_CONTRAST, alpha=1)
 
     aplc = AmplitudeAPLC(amp = aperture - noisy,
                         amp_dx=pupil_dx,
@@ -119,7 +124,7 @@ for wave in band:
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
-                        weight=1.,
+                        weight=-1.,
                         cost_function=cost)
 
     aplc.set_optimization_method(zonal=True)
@@ -161,13 +166,26 @@ else:
 # Dry-run to debug
 # opt_contrast_throughput.fg(x0)
 # Init the Augmented Lagrangian Optimizer
+tol = 1e-8
+options = {
+    "maxcor": 25, # this is the 'memory'
+    "ftol": 1e-20,
+    "gtol": 1e-14,
+    "maxiter": MAX_ITERS,
+    "disp":1,
+    "maxls": 100,
+    
+}
 optym = AugmentedLagrangian(objective=throughput,
                             constraints=[opt_contrast],
                             constraint_vals=[(0)],
                             initial_multipliers=[0],
                             x0=x0,
                             penalty=10.,
-                            periodic_relaxation=None)
+                            periodic_relaxation=None,
+                            options=options)
+
+optym._setup_multipliers()
 
 # some timing
 t1 = time.perf_counter()
