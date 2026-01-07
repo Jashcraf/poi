@@ -61,26 +61,33 @@ class ADPhaseRetireval:
 
     def update(self, x):
         if not self.zonal:
-            phs = np.tensordot(self.basis, x, axes=(0,0))
+            if len(x) == 1:
+                phs = np.asarray(self.basis) * np.asarray(x)
+            else:
+                phs = np.tensordot(np.asarray(self.basis), np.asarray(x), axes=(0,0))
         else:
             phs = np.zeros(self.amp.shape, dtype=float)
             phs[self.amp_select] = x
 
-        W = (2 * np.pi / self.wvl) * phs
+        I = 0
 
-        # TODO: Check if this is a minus sign instead
-        W -= self.defocus_aberration
-        g = self.amp * np.exp(1j * W)
-        G = focus_fixed_sampling(
-            wavefunction=g,
-            input_dx=self.amp_dx,
-            prop_dist = self.efl,
-            wavelength=self.wvl,
-            output_dx=self.img_dx,
-            output_samples=self.D.shape,
-            shift=(0, 0),
-            method='mdft')
-        I = np.abs(G)**2
+        for w in self.wvl:  
+
+            W = (2 * np.pi / w) * phs
+            W -= self.defocus_aberration
+            g = self.amp * np.exp(1j * W)
+            G = focus_fixed_sampling(
+                wavefunction=g,
+                input_dx=self.amp_dx,
+                prop_dist = self.efl,
+                wavelength=w,
+                output_dx=self.img_dx,
+                output_samples=self.D.shape,
+                shift=(0, 0),
+                method='mdft')
+
+            I += np.abs(G)**2 / len(self.wvl)
+
         E = np.sum((I - self.D)**2)
         self.phs = phs
         self.W = W
@@ -96,19 +103,25 @@ class ADPhaseRetireval:
 
     def rev(self, x):
         self.update(x)
-        Ibar = 2*(self.I - self.D)
-        Gbar = 2 * Ibar * self.G
-        gbar = focus_fixed_sampling_backprop(
-            wavefunction=Gbar,
-            input_dx=self.amp_dx,
-            prop_dist = self.efl,
-            wavelength=self.wvl,
-            output_dx=self.img_dx,
-            output_samples=self.phs.shape,
-            shift=(0, 0),
-            method='mdft')
 
-        Wbar = 2 * np.pi / self.wvl * np.imag(gbar * np.conj(self.g))
+        Wbar = 0
+
+        for w in self.wvl:
+
+            Ibar = 2*(self.I - self.D) / len(self.wvl)
+            Gbar = 2 * Ibar * self.G
+            gbar = focus_fixed_sampling_backprop(
+                wavefunction=Gbar,
+                input_dx=self.amp_dx,
+                prop_dist = self.efl,
+                wavelength=w,
+                output_dx=self.img_dx,
+                output_samples=self.phs.shape,
+                shift=(0, 0),
+                method='mdft')
+    
+            Wbar += 2 * np.pi / w * np.imag(gbar * np.conj(self.g))
+            
         if not self.zonal:
             abar = np.tensordot(self.basis, Wbar)
 
