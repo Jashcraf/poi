@@ -12,14 +12,14 @@ from prysm.mathops import np, set_backend_to_cupy
 from prysm.propagation import focus_fixed_sampling
 from prysm.fttools import MatrixDFTExecutor
 
-
 # Available optimizers
 from prysm.x.optym import (
     F77LBFGSB, # The one that works with Box constraints
 )
 
 from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
-from poi.aplc_design import AmplitudeAPLC, APLCWrapper
+from poi.aplc_design import AmplitudeAPLC, APLCWrapper, ThroughputOptimizer
+from poi.propagation import convolve_2d
 from poi.cost_functions import (
     CoreThroughput,
     LogSumExp,
@@ -38,18 +38,18 @@ IWA = 6
 OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
-BANDWIDTH = .10 # percent
-NWVLS = 1
+BANDWIDTH = 10 # percent
+NWVLS = 5
 OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100_00
+MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
-TARGET_CONTRAST = 1e-10
+TARGET_CONTRAST = 1e-11
 
-THROUGHPUT_RELATIVE_WEIGHT =  1e-11 # 1e-15 # relative weight of the throughput optimization
+THROUGHPUT_RELATIVE_WEIGHT =  1e-21 # 1e-15 # relative weight of the throughput optimization
 # ---
 
 if USE_GPU:
@@ -128,23 +128,29 @@ for wave in band:
 
 # Set up CoreThroughput cost function
 core_mask = inner_core_mask(iss, core_size)
-core_throughput = CoreThroughput()
+# core_throughput = CoreThroughput()
+# 
+# throughput = AmplitudeAPLC(amp = aperture - noisy,
+#                         amp_dx=pupil_dx,
+#                         efl=EFL,
+#                         wvl=wave,
+# 
+#                         # NOTE this is no longer a dark hole,
+#                         # but a PSF core window
+#                         dark_hole=core_mask, 
+#                         dh_dx=img_dx,
+#                         fpm=focal_plane_mask,
+#                         ls=ls_mask,
+#                         weight=THROUGHPUT_RELATIVE_WEIGHT,
+# 
+#                         # The cost function is now altered to max core throughput
+#                         cost_function=core_throughput)
 
-throughput = AmplitudeAPLC(amp = aperture - noisy,
-                        amp_dx=pupil_dx,
-                        efl=EFL,
-                        wvl=wave,
-
-                        # NOTE this is no longer a dark hole,
-                        # but a PSF core window
-                        dark_hole=core_mask, 
-                        dh_dx=img_dx,
-                        fpm=focal_plane_mask,
-                        ls=ls_mask,
-                        weight=THROUGHPUT_RELATIVE_WEIGHT,
-
-                        # The cost function is now altered to max core throughput
-                        cost_function=core_throughput)
+throughput = ThroughputOptimizer(amp=aperture - noisy,
+                                 wvl=wave,
+                                 basis=None,
+                                 ls=ls_mask,
+                                 relative_weight=THROUGHPUT_RELATIVE_WEIGHT)
 
 throughput.set_optimization_method(zonal=True)
 optlist.append(throughput)
@@ -164,7 +170,7 @@ else:
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
-                memory=10, upper_bounds=tnp.ones(x0.shape),
+                memory=50, upper_bounds=tnp.ones(x0.shape),
                 lower_bounds=tnp.zeros(x0.shape))
 opt.iprint = 0
 
@@ -173,13 +179,71 @@ t1 = time.perf_counter()
 
 # This is in a try-except block because the optimizer will
 # sometimes raise a StopIteration exception when it is done
-try:
-    for _ in tqdm(range(MAX_ITERS)):
-        opt.step()
-except StopIteration:
-    pass
-print(f"Time to Optimizer for {MAX_ITERS}")
-print(time.perf_counter() - t1)
+
+# Does not appear to work :/
+N_RELAXATIONS = 1
+
+# Set up a gaussian kernel
+npx = aperture.shape[0]
+sigma = 1
+xx = np.linspace(-npx//2, npx//2+1, npx)
+xx, yy = np.meshgrid(xx, xx)
+r = np.hypot(xx, yy)
+kernel =np.exp(-0.5 * (r/sigma)**2)
+
+for jj in range(N_RELAXATIONS):
+    
+    newmask = aplc.amp
+    newmask[aplc.amp_select] = opt.x
+    
+    plt.figure(figsize=[12, 4])
+    plt.subplot(131)
+    plt.title("Apodizer")
+    plt.imshow(newmask.get(), cmap="gray")
+    plt.colorbar()
+
+    # convolve with kernel
+    # newmask = np.abs(convolve_2d(newmask, kernel, normalize=True))
+
+    vals_to_optimize = newmask[aplc.amp_select]
+    vals_to_optimize = np.round(vals_to_optimize, decimals=0)
+
+    if hasattr(vals_to_optimize, "get"):
+        vals_to_optimize = vals_to_optimize.get()
+    
+    opt.x = vals_to_optimize
+    newmask = aplc.amp
+    newmask[aplc.amp_select] = opt.x
+
+    # be sure it loads
+    _, _ = opt_contrast_throughput.fg(opt.x)
+
+    plt.subplot(132)
+    plt.title("After convolution")
+    plt.imshow(newmask.get(), cmap="gray")
+    plt.colorbar()
+
+    plt.subplot(133)
+    plt.title("Gaussian Kernel")
+    plt.imshow(kernel.get())
+    plt.colorbar()
+    plt.show()
+
+    # Refresh the optimizer
+    # if jj != 0:
+    #     opt = F77LBFGSB(opt_contrast_throughput.fg, vals_to_optimize,
+    #                       memory=10, upper_bounds=tnp.ones(x0.shape),
+    #                       lower_bounds=tnp.zeros(x0.shape))
+    
+    try:
+        for _ in tqdm(range(MAX_ITERS)):
+            opt.step()
+    except StopIteration:
+        pass
+    
+    print(f"Time to Optimizer for {MAX_ITERS}")
+    print(time.perf_counter() - t1)
+
 
 newmask = aplc.amp
 newmask[aplc.amp_select] = opt.x

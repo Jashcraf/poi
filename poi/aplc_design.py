@@ -998,9 +998,9 @@ class PAPLCOptimizer:
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float64)
 
-        self.val_grads = val_grads
-        self.initial_multipliers = initial_multipliers
-        self.penalty = penalty
+        #self.val_grads = val_grads
+        #self.initial_multipliers = initial_multipliers
+        #self.penalty = penalty
 
         if center_wavelength is None:
                 self.c_wvl = wvl
@@ -1422,8 +1422,10 @@ class ThroughputOptimizer:
         # impose constraints
         aplc = np.real(self.aplc)
         b = self.amp * aplc
-        c = self.ls[self.amp_select] * b[self.amp_select]
-        # c = b[self.amp_select]
+        
+        # Ignoring the lyot stop
+        # c = self.ls[self.amp_select] * b[self.amp_select]
+        c = b[self.amp_select]
 
         #I = np.abs(c)**2
         I = c / self.amp[self.amp_select] # make throughput sampling-independent
@@ -1458,7 +1460,7 @@ class ThroughputOptimizer:
 
         # backprop lyot stop application
         # bbar = self.ls.conj()[self.amp_select] * cbar
-        bbar = cbar * self.ls[self.amp_select]
+        bbar = cbar #* self.ls[self.amp_select]
         aplcbar = np.real(bbar)
 
         if not self.zonal:

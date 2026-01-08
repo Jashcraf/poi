@@ -37,7 +37,7 @@ from prysm.x.optym import (
     AdaMomentum
 )
 
-from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask, knife_edge_mask, circular_mask
+from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask, knife_edge_mask, circular_mask
 from poi.aplc_design import PAPLCOptimizer, APLCWrapper, ThroughputOptimizer, CoreThroughputOptimizer
 
 
@@ -46,18 +46,18 @@ USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.350 # microns
-IMG_NPIX = 256 + 128
+IMG_NPIX = (256 + 128) // 2
 IWA = 6
 OWA = 20
-AZMIN = -89 # Defines the angular extend of the dark zone
-AZMAX = 89
+AZMIN = -65/2 # Defines the angular extend of the dark zone
+AZMAX = 65/2
 BANDWIDTH = 10 # percent
 NWVLS = 5
-OVERSAMPLE = 8 # pix per lam/D
+OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
-LS_FRAC = 0.85 # Fraction of the pupil radius to use for the Lyot stop
+LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.0 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 10_0
+MAX_ITERS = 100_00
 core_size = 0.7 # radius in lam/D
 # 1e-11 produces good monochromatic designs
 THROUGHPUT_RELATIVE_WEIGHT =  1e-10 # 1e-15 # relative weight of the throughput optimization
