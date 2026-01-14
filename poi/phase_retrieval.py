@@ -21,6 +21,69 @@ from .processing import mean_squared_error
 from warnings import warn
 
 """Largely taken from dydgug.vappid.VAPPOptimizer2, with minor modifications to support focus diversity"""
+
+def bias_and_gain_invariant_error(I, D, mask):  # NOQA
+    """taken from prysm.x.optym by Brandon Dube
+
+    Bias and gain invariant error.
+
+    This cost function computes internal least mean squares estimates of the
+    overall bias (DC pedestal) and gain between the signal I and D.  This
+    objective is useful when the overall signal level is ambiguous in phase
+    retrieval type problems, and can significantly help stabilize the
+    optimization process.
+
+    See also: mean_square_error
+
+    Parameters
+    ----------
+    I : ndarray
+        'intensity' or model data, any float dtype, any shape
+    D : ndarray
+        'data' or true mesaurement to be matched, any float dtype, any shape
+    mask : ndarray
+        logical array with elements to keep (True) or exclude (False)
+
+    Returns
+    -------
+    float, ndarray
+        cost, dcost/dI
+
+
+    """
+    if mask is not None:
+        grad = np.zeros_like(I)
+        I = I[mask]  # NOQA
+        D = D[mask]
+
+    Ihat = I - I.mean()  # zero mean
+    Dhat = D - D.mean()
+
+    N = I.size
+
+    num = (Ihat*Dhat).sum()
+    den = (Ihat*Ihat).sum()
+    alpha = num/den
+
+    alphaI = alpha*I
+
+    beta = (D-alphaI)/N
+
+    R = 1/((D*D).sum())
+    raw_err = (alphaI + beta) - D
+    err = R*(raw_err*raw_err).sum()
+    # 2 is from raw_err squared
+    # R is multiplied and not part of the differentiation, pass-through
+    # likewise with alpha
+    grad = 2*R*alpha*raw_err
+
+    if mask is not None:
+        grad2 = np.zeros(mask.shape, dtype=I.dtype)
+        grad2[mask] = grad
+        grad = grad2
+
+    return err, grad
+
 class ADPhaseRetireval:
     def __init__(self, amp, amp_dx, efl, wvl, basis, target, img_dx, defocus_waves=0, initial_phase=None):
         if initial_phase is None:
@@ -74,7 +137,12 @@ class ADPhaseRetireval:
             shift=(0, 0),
             method='mdft')
         I = np.abs(G)**2
-        E = np.sum((I - self.D)**2)
+        
+        # E = np.sum((I - self.D)**2)
+        err, grad = bias_and_gain_invariant_error(I, self.D)
+        self.Ibar = grad 
+        
+        self.E = err
         self.phs = phs
         self.W = W
         self.g = g
@@ -89,8 +157,8 @@ class ADPhaseRetireval:
 
     def rev(self, x):
         self.update(x)
-        Ibar = 2*(self.I - self.D)
-        Gbar = 2 * Ibar * self.G
+        #Ibar = 2*(self.I - self.D)
+        Gbar = 2 * self.Ibar * self.G
         gbar = focus_fixed_sampling_backprop(
             wavefunction=Gbar,
             input_dx=self.amp_dx,
