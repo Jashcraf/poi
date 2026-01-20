@@ -15,6 +15,7 @@ from prysm.polynomials import (
 )
 import ipdb
 from prysm.x.polarization import linear_polarizer, quarter_wave_plate
+from prysm.x.optym.cost import bias_and_gain_invariant_error
 from .propagation import _angular_spectrum_prop, _angular_spectrum_transfer_function
 from .processing import mean_squared_error
 from .poi_math import broadcast_kron
@@ -27,9 +28,12 @@ U = np.array([
     ])
 
 
-"""Largely taken from dydgug.vappid.VAPPOptimizer2, with minor modifications to support focus diversity"""
+"""Largely taken from dydgug.vappid.VAPPOptimizer2, with minor modifications
+to support focus diversity"""
 class ADPhaseRetireval:
-    def __init__(self, amp, amp_dx, efl, wvl, basis, target, img_dx, defocus_waves=0, initial_phase=None):
+    def __init__(self, amp, amp_dx, efl, wvl, basis, target, img_dx,
+                defocus_waves=0, initial_phase=None):
+        
         if initial_phase is None:
             phs = np.zeros(amp.shape, dtype=float)
         else:
@@ -52,6 +56,7 @@ class ADPhaseRetireval:
         x, y = make_xy_grid(amp.shape[0], diameter=self.epd)
         r, t = cart_to_polar(x, y)
         r_z = r / (self.epd / 2)
+        
         self.defocus_polynomial = hopkins(0, 2, 0, r_z, t, 0)
         self.defocus_aberration = 2 * np.pi * self.defocus_polynomial * self.defocus * self.amp
         self.cost = []
@@ -80,14 +85,18 @@ class ADPhaseRetireval:
             output_samples=self.D.shape,
             shift=(0, 0),
             method='mdft')
+        
         I = np.abs(G)**2
-        E = np.sum((I - self.D)**2)
+
+        # TODO: Add cost function for bias and gain invariant error
+        # For now, fine to just import prysm
+        # E = np.sum((I - self.D)**2)
+        self.E, self.Ibar = bias_and_gain_invariant_error(I, self.D, mask=None)
         self.phs = phs
         self.W = W
         self.g = g
         self.G = G
         self.I = I
-        self.E = E
         return
 
     def fwd(self, x):
@@ -96,8 +105,11 @@ class ADPhaseRetireval:
 
     def rev(self, x):
         self.update(x)
-        Ibar = 2*(self.I - self.D)
-        Gbar = 2 * Ibar * self.G
+        
+        # Remaining from using MSE for phase retrieval
+        # Ibar = 2*(self.I - self.D)
+
+        Gbar = 2 * self.Ibar * self.G
         gbar = focus_fixed_sampling_backprop(
             wavefunction=Gbar,
             input_dx=self.amp_dx,
@@ -109,10 +121,10 @@ class ADPhaseRetireval:
             method='mdft')
 
         Wbar = 2 * np.pi / self.wvl * np.imag(gbar * np.conj(self.g))
+        
         if not self.zonal:
             abar = np.tensordot(self.basis, Wbar)
 
-        self.Ibar = Ibar
         self.Gbar = Gbar
         self.gbar = gbar
         self.Wbar = Wbar

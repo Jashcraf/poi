@@ -15,7 +15,7 @@ from .cost_functions import MeanSquaredErrorQuadratic as MeanSquaredError
 class BaseAPLC:
     def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
                  basis, initial_amplitude, activation, weight,
-                 cost_function, include_fpm, alpha):
+                 cost_function, include_fpm, alpha, point_symmetric):
         """
         Base class for optimizing Apodized Pupil Lyot Coronagraphs,
         not intended to be used directly. Instead, use
@@ -24,6 +24,8 @@ class BaseAPLC:
         'PhaseAPLC'
 
         which inherit from this class
+
+        TODO: Implement symmetries
 
         Parameters
         ----------
@@ -63,6 +65,21 @@ class BaseAPLC:
             If None, defaults to MeanSquaredError.
         alpha: float, optional
             "Steepness" parameter for some cost functions
+        point_symmetric: bool
+            Whether to consider the apodizer as point-symmetric, i.e.,
+            f(x) = f(-x). This is useful for annular / mirror symmetric
+            focal planes to substantially reduce the computational complexity.
+            For this preliminary implementation, we will always assume that
+            the user supplies the the apodizer on the **RIGHT** side of the 
+            array. If point_symmetric=True, it will be copied to the left
+            half of the array.
+
+            Note
+            ----
+            There is a symmetry ambiguity if the apodizer array is odd-valued, 
+            which may be the case for FFT-centered arrays. This is troublesome,
+            because the user will supply some guess array that we don't know
+            the shape of a priori. Wait, maybe we do
         """
 
         # Define initial amplitude if not present
@@ -74,8 +91,16 @@ class BaseAPLC:
             self.activation = Dummy(1)
         else:
             self.activation = activation
+        
+        # Get the even-ness of the apodizer
+        self.apodizer_shape = aplc.shape
 
+        if self.apodizer_shape[0] % 2 == 0:
+            self.is_even = True
+        else:
+            self.is_even = False
 
+        # Store relevant quantities
         self.amp = amp
         self.amp_select = self.amp > 1e-9
         self.amp_dx = amp_dx
@@ -93,11 +118,17 @@ class BaseAPLC:
         self.alpha = alpha
         self.dh_target = 0
         self.include_fpm = include_fpm
+        self.point_symmetric = point_symmetric
 
         if cost_function is None:
             self.cost_function = MeanSquaredError(target=self.dh_target)
         else:
             self.cost_function = cost_function
+
+        if self.point_symmetric == True:
+
+            # Go up to half the apodizer shape, unsure if there needs to be a +1 here
+            self.amp_select[:, :self.apodizer_shape[0] // 2] = 0
 
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
@@ -112,8 +143,14 @@ class BaseAPLC:
         else:
             # activate
             self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
-            self.aplc[self.amp_select] = self.activation.forward(x)
+            activated_x = self.activation.forward(x)
+
+        self.aplc[self.amp_select] = activated_x
         
+        # If point symmetric, need to account for mirror symmetry
+        if self.point_symmetric:
+            self.aplc += np.fliplr(self.aplc)
+
         # NOTE: This function is not defined in this base class because
         # of how different the PhaseAPLC and AmplitudeAPLC behave. See
         # Their respective definitions for the forward and adjoint of
@@ -172,10 +209,6 @@ class BaseAPLC:
         N = I / self.contrast_norm
         
         # Evaluate cost function
-        # Multiplying is a little weird here because MSE gets 
-        # kind of thrown off. But this makes it compatible
-        # With core throughput optimization as well. Alternatively,
-        # We could have self.dh = the core mask?
         E = self.cost_function.forward(N[self.dh])
         E *= self.weight
 
@@ -183,10 +216,10 @@ class BaseAPLC:
             import matplotlib.pyplot as plt
             plt.figure(figsize=[10, 5])
             plt.subplot(121)
-            plt.imshow(self.amp.get(), cmap="grey")
+            plt.imshow(self.amp, cmap="grey")
             plt.colorbar()
             plt.subplot(122)
-            plt.imshow(self.aplc.get(), cmap="inferno")
+            plt.imshow(self.aplc, cmap="inferno")
             plt.colorbar()
             plt.show()
         
@@ -194,7 +227,7 @@ class BaseAPLC:
             import matplotlib.pyplot as plt
             from matplotlib.colors import LogNorm
             plt.figure()
-            plt.imshow(N.get(), cmap="inferno", norm=LogNorm(vmin=1e-10, vmax=1))
+            plt.imshow(N * self.dh, cmap="inferno", norm=LogNorm(vmin=1e-10, vmax=1))
             plt.colorbar()
             plt.show()
 
@@ -312,7 +345,7 @@ class BaseAPLC:
 class BaseSPC:
     def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
                  basis, initial_amplitude, activation, weight,
-                 cost_function, include_fpm, alpha):
+                 cost_function, include_fpm, alpha, point_symmetric):
         """
         Base class for optimizing Shaped Pupil Coronagraphs,
         which do not have focal plane masks or Lyot stops
@@ -357,6 +390,21 @@ class BaseSPC:
             If None, defaults to MeanSquaredError.
         alpha: float, optional
             "Steepness" parameter for some cost functions
+        point_symmetric: bool
+            Whether to consider the apodizer as point-symmetric, i.e.,
+            f(x) = f(-x). This is useful for annular / mirror symmetric
+            focal planes to substantially reduce the computational complexity.
+            For this preliminary implementation, we will always assume that
+            the user supplies the the apodizer on the **RIGHT** side of the 
+            array. If point_symmetric=True, it will be copied to the left
+            half of the array.
+
+            Note
+            ----
+            There is a symmetry ambiguity if the apodizer array is odd-valued, 
+            which may be the case for FFT-centered arrays. This is troublesome,
+            because the user will supply some guess array that we don't know
+            the shape of a priori. Wait, maybe we do
         """
 
         # Define initial amplitude if not present
@@ -369,6 +417,13 @@ class BaseSPC:
         else:
             self.activation = activation
 
+        # Get the even-ness of the apodizer
+        self.apodizer_shape = aplc.shape
+
+        if self.apodizer_shape[0] % 2 == 0:
+            self.is_even = True
+        else:
+            self.is_even = False
 
         self.amp = amp
         self.amp_select = self.amp > 1e-9
@@ -402,7 +457,7 @@ class BaseSPC:
         if not self.zonal:
             self.aplc = np.tensordot(self.basis, x, axes=(0,0))
         else:
-            # activate
+
             self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
             self.aplc[self.amp_select] = self.activation.forward(x)
         
@@ -509,12 +564,13 @@ class AmplitudeAPLC(BaseAPLC):
 
     def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
                  basis=None, initial_amplitude=None, activation=None, weight=1,
-                 cost_function=None, include_fpm=True, alpha=None):
+                 cost_function=None, include_fpm=True, alpha=None,
+                 point_symmetric=False):
 
 
         super().__init__(amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
                        basis, initial_amplitude, activation, weight,
-                       cost_function, include_fpm, alpha)
+                       cost_function, include_fpm, alpha, point_symmetric)
 
     def _setup_coefficients(self):
         self.aplc = np.real(self.aplc)
@@ -527,12 +583,12 @@ class PhaseAPLC(BaseAPLC):
 
     def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
                  basis=None, initial_amplitude=None, activation=None, weight=1,
-                 include_fpm=True):
+                 include_fpm=True, point_symmetric=False):
 
         super().__init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
                        basis=basis, initial_amplitude=initial_amplitude,
                        activation=activation, weight=weight,
-                       include_fpm=include_fpm)
+                       include_fpm=include_fpm, point_symmetric=point_symmetric)
 
     def _setup_coefficients(self):
         self.W = (2 * np.pi / self.wvl) * self.aplc
