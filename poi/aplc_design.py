@@ -134,6 +134,8 @@ class BaseAPLC:
         self.zonal = zonal
 
     def update(self, x):
+
+        self.shiftx = 0.
         
         # Convert lists to arrays if that's how they are supplied
         x = np.asarray(x)
@@ -168,7 +170,7 @@ class BaseAPLC:
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
-            shift=(0, 0),
+            shift=(self.shiftx, 0),
             method='mdft')
         
         # Get contrast normalization (approx)
@@ -202,7 +204,7 @@ class BaseAPLC:
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
-            shift=(0, 0),
+            shift=(-self.shiftx, 0),
             method='mdft')
 
         I = np.abs(D)**2
@@ -290,7 +292,7 @@ class BaseAPLC:
             wavelength=self.wvl,
             output_dx=self.amp_dx,
             output_samples=self.I.shape, 
-            shift=(0, 0),
+            shift=(self.shiftx, 0),
             method='mdft')
 
         # backprop fpm application
@@ -333,6 +335,11 @@ class BaseAPLC:
 
         else:
             xbar = self.aplcbar[self.amp_select]
+            
+            # Add the gradient on the other side of the pupil
+            # if self.point_symmetric:
+            #     xbar += self.aplcbar[np.fliplr(self.amp_select)]
+            
             abar = self.activation.backprop(xbar)
             return abar
 

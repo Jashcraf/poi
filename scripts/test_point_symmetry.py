@@ -30,18 +30,18 @@ from poi.cost_functions import (
 ) 
 
 # --- USER INPUT DESIGN PARAMS HERE
-USE_GPU = False # Use GPU for the optimization
+USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.350 # microns
-IMG_NPIX = (64)
-IWA = 1/2
+IMG_NPIX = (256)
+IWA = 6
 OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
 BANDWIDTH = .10 # percent
 NWVLS = 1
-OVERSAMPLE = 1 # pix per lam/D
+OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
@@ -56,6 +56,17 @@ THROUGHPUT_RELATIVE_WEIGHT =  1e-10
 # 1e-10  [~]     [x]
 #  *1e2  [~]     [x]
 # ---
+
+# For shifting the focal plane mask
+def shift_right(array):
+    shifted_array = np.zeros_like(array)
+    shifted_array[:, 1:] = array[:, :-1]
+    return shifted_array
+
+def shift_left(array):
+    shifted_array = np.zeros_like(array)
+    shifted_array[:, :-1] = array[:, 1:]
+    return shifted_array
 
 if USE_GPU:
     # np switches from numpy to cupy
@@ -101,10 +112,9 @@ else:
 
 iss = ImgSamplingSpec(IMG_NPIX, lambd / OVERSAMPLE, lambd)
 focal_plane_mask = annular_mask(iss, FPM_IWA, FPM_OWA, theta_min=AZMIN, theta_max=AZMAX)
-focal_plane_mask += np.fliplr(focal_plane_mask)
+# focal_plane_mask = shift_right(focal_plane_mask)
 
 dh = annular_mask(iss, IWA, OWA, theta_min=AZMIN, theta_max=AZMAX)
-dh = dh + np.fliplr(dh)
 
 ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_ratio=LS_OBSCURATION_RATIO)
 
@@ -166,10 +176,10 @@ optlist.append(throughput)
 # optimization wrapper that sums the gradients and objective functions
 opt_contrast_throughput = APLCWrapper(optlist=optlist)
 
-plt.figure()
-plt.title("There shouldn't be a vertical line")
-plt.imshow(np.float64(aplc.amp_select) + np.float64(np.fliplr(aplc.amp_select)))
-plt.colorbar()
+# plt.figure()
+# plt.title("There shouldn't be a vertical line")
+# plt.imshow(np.float64(aplc.amp_select) + np.float64(np.fliplr(aplc.amp_select)))
+# plt.colorbar()
 
 # starting guess is a filled aperture
 # If point_symmetric=True, this filters out the aperture
@@ -178,11 +188,30 @@ if np.__name__ == "cupy":
 else:
     x0 = tnp.ones(aplc.amp.shape, dtype=float)[aplc.amp_select]
 
-x0 -= np.random.random(x0.shape) / 1000
+##  x0 -= tnp.random.random(x0.shape) / 1000
 
 
 # Dry-run to debug
-# opt_contrast_throughput.fg(x0)
+_, _ = opt_contrast_throughput.fg(x0)
+
+# Just plot the focal plane
+plt.figure()
+plt.subplot(131)
+plt.title("Coro PSF before optimization")
+plt.imshow(opt_contrast_throughput.optlist[0].I.get() * dh.get(), cmap="inferno", norm=LogNorm())
+plt.colorbar()
+plt.subplot(132)
+plt.title("Re|Pupil Gradient| before optimization")
+plt.imshow(tnp.real(opt_contrast_throughput.optlist[0].bbar.get()))
+plt.colorbar()
+plt.subplot(133)
+plt.title("Difference in gradient from either side of the pupil")
+_opt = opt_contrast_throughput.optlist[0]
+xbar = _opt.aplcbar * _opt.amp_select:
+xbar_flipped = np.fliplr(_opt.aplcbar * np.fliplr(_opt.amp_select))
+plt.imshow((xbar - xbar_flipped).get(), cmap="RdBu_r")
+plt.colorbar()
+plt.show()
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
@@ -211,9 +240,31 @@ for jj in range(N_RELAXATIONS):
     
     newmask = np.zeros_like(aplc.amp, dtype=float)
     newmask[aplc.amp_select] = opt.x
+    
+    plot_amp_select = aplc.amp_select.copy()
+    plot_newmask = newmask.copy()
+
+    if hasattr(plot_amp_select, "get"):
+        plot_amp_select = plot_amp_select.get()
+        plot_newmask = plot_newmask.get()
+
+    plt.figure()
+    plt.suptitle(f"Iteration {jj}, check mask construction")
+    plt.subplot(121)
+    plt.imshow(plot_amp_select)
+    plt.colorbar()
+
+    plt.subplot(122)
+    plt.imshow(plot_newmask)
+    plt.colorbar()
+
+    plt.show()
 
     if aplc.point_symmetric:
         newmask += np.fliplr(newmask)
+
+    if hasattr(newmask, "get"):
+        newmask = newmask.get()
 
     plt.figure(figsize=[12, 4])
     plt.title(f"Apodizer iteration = {jj}")

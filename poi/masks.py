@@ -47,15 +47,41 @@ def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None):
     r, t = coordinates.cart_to_polar(x, y)
     iwa = iwa * iss.lamD
     owa = owa * iss.lamD
-    mask = r > iwa
-    mask[r > owa] = 0
+
+    mask = (r > iwa) & (r <= owa)
+
+    t_norm = t % (2 * np.pi)
+
+    if theta_min is not None and theta_max is not None:
+
+        # Normalize angles to [0, 2π]
+        t_norm = t % (2 * np.pi)
+        
+        theta_min_rad = np.radians(theta_min) % (2 * np.pi)
+        theta_max_rad = np.radians(theta_max) % (2 * np.pi)
+        
+        # Create mask for primary wedge
+        if theta_max_rad < theta_min_rad:
+            # Range wraps around
+            angular_mask = (t_norm >= theta_min_rad) | (t_norm <= theta_max_rad)
+        else:
+            # Normal case
+            angular_mask = (t_norm >= theta_min_rad) & (t_norm <= theta_max_rad)
+        
+        # Create mask for opposite wedge (180° rotated)
+        t_opposite = (t_norm + np.pi) % (2 * np.pi)
+        if theta_max_rad < theta_min_rad:
+            angular_mask_opposite = (t_opposite >= theta_min_rad) | (t_opposite <= theta_max_rad)
+        else:
+            angular_mask_opposite = (t_opposite >= theta_min_rad) & (t_opposite <= theta_max_rad)
+        
+        # Combine both wedges
+        angular_mask = angular_mask | angular_mask_opposite
+        
+        # Combine radial and angular masks
+        mask = mask & angular_mask
     
-    if theta_min != None and theta_max != None:
-        mask[t < np.radians(theta_min)] = 0
-        mask[t > np.radians(theta_max)] = 0
-
     return mask
-
 
 def lyot_mask(pupil_npix, pupil_dx, frac, obscuration_ratio=0.0):
 
