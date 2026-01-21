@@ -46,11 +46,11 @@ pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.0 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 1000
+MAX_ITERS = 10000
 core_size = 0.7 # radius in lam/D
 TARGET_CONTRAST = 1e-11
 
-CONTRAST_RELATIVE_WEIGHT = 1e5
+CONTRAST_RELATIVE_WEIGHT = 1e3
 THROUGHPUT_RELATIVE_WEIGHT =  1e-10
 #       Binary Contrast
 # 1e-10  [~]     [x]
@@ -136,7 +136,7 @@ for wave in band:
                         ls=ls_mask,
                         weight=CONTRAST_RELATIVE_WEIGHT,
                         cost_function=cost,
-                        point_symmetric=True)
+                        point_symmetric=False)
 
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
@@ -160,7 +160,7 @@ throughput = AmplitudeAPLC(amp=aperture,
 
                         # The cost function is now altered to max core throughput
                         cost_function=core_throughput,
-                        point_symmetric=True,
+                        point_symmetric=False,
                         include_fpm=False)
 
 # throughput = ThroughputOptimizer(amp=aperture - noisy,
@@ -170,7 +170,7 @@ throughput = AmplitudeAPLC(amp=aperture,
 #                                  relative_weight=THROUGHPUT_RELATIVE_WEIGHT)
 
 throughput.set_optimization_method(zonal=True)
-optlist.append(throughput)
+#optlist.append(throughput)
 
 
 # optimization wrapper that sums the gradients and objective functions
@@ -188,7 +188,7 @@ if np.__name__ == "cupy":
 else:
     x0 = tnp.ones(aplc.amp.shape, dtype=float)[aplc.amp_select]
 
-##  x0 -= tnp.random.random(x0.shape) / 1000
+x0 -= tnp.random.random(x0.shape) / 1000
 
 
 # Dry-run to debug
@@ -198,7 +198,7 @@ _, _ = opt_contrast_throughput.fg(x0)
 plt.figure()
 plt.subplot(131)
 plt.title("Coro PSF before optimization")
-plt.imshow(opt_contrast_throughput.optlist[0].I.get() * dh.get(), cmap="inferno", norm=LogNorm())
+plt.imshow(opt_contrast_throughput.optlist[0].I.get(), cmap="inferno", norm=LogNorm())
 plt.colorbar()
 plt.subplot(132)
 plt.title("Re|Pupil Gradient| before optimization")
@@ -207,9 +207,35 @@ plt.colorbar()
 plt.subplot(133)
 plt.title("Difference in gradient from either side of the pupil")
 _opt = opt_contrast_throughput.optlist[0]
-xbar = _opt.aplcbar * _opt.amp_select:
+xbar = _opt.aplcbar * _opt.amp_select
 xbar_flipped = np.fliplr(_opt.aplcbar * np.fliplr(_opt.amp_select))
 plt.imshow((xbar - xbar_flipped).get(), cmap="RdBu_r")
+plt.colorbar()
+
+plt.figure()
+plt.subplot(241)
+plt.imshow(np.real(_opt.b).get())
+plt.colorbar()
+plt.subplot(242)
+plt.imshow(tnp.abs(_opt.B.get())**2, norm=LogNorm())
+plt.colorbar()
+plt.subplot(243)
+plt.imshow(np.real(_opt.c * ls_mask).get())
+plt.colorbar()
+plt.subplot(244)
+plt.imshow(tnp.abs(_opt.I.get())**2, norm=LogNorm())
+plt.colorbar()
+plt.subplot(245)
+plt.imshow(np.real(_opt.bbar).get())
+plt.colorbar()
+plt.subplot(246)
+plt.imshow(tnp.abs(_opt.Cbar.get())**2, norm=LogNorm())
+plt.colorbar()
+plt.subplot(247)
+plt.imshow(np.real(_opt.cbar).get())
+plt.colorbar()
+plt.subplot(248)
+plt.imshow(tnp.abs(_opt.Ibar.get())**2, norm=LogNorm())
 plt.colorbar()
 plt.show()
 
@@ -217,7 +243,7 @@ plt.show()
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
                 memory=10, upper_bounds=tnp.ones(x0.shape),
                 lower_bounds=tnp.zeros(x0.shape))
-opt.iprint = 0
+opt.iprint = 1
 
 # some timing
 t1 = time.perf_counter()

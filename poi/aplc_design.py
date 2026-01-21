@@ -1,5 +1,10 @@
 from prysm.mathops import np, fft
-from prysm.propagation import focus_fixed_sampling, focus_fixed_sampling_backprop
+from prysm.propagation import (
+        focus_fixed_sampling,
+        focus_fixed_sampling_backprop,
+        unfocus_fixed_sampling,
+        unfocus_fixed_sampling_backprop
+)
 from prysm import coordinates, geometry
 from prysm.x.optym import F77LBFGSB
 from scipy.optimize import minimize
@@ -287,10 +292,10 @@ class BaseAPLC:
         # backprop from before stop to focal plane mask
         Cbar = focus_fixed_sampling_backprop(
             wavefunction=cbar,
-            input_dx=self.dh_dx,
+            input_dx=self.amp_dx,
             prop_dist = self.efl,
             wavelength=self.wvl,
-            output_dx=self.amp_dx,
+            output_dx=self.dh_dx,
             output_samples=self.I.shape, 
             shift=(self.shiftx, 0),
             method='mdft')
