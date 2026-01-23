@@ -292,10 +292,10 @@ class BaseAPLC:
         # backprop from before stop to focal plane mask
         Cbar = focus_fixed_sampling_backprop(
             wavefunction=cbar,
-            input_dx=self.amp_dx,
+            input_dx=self.dh_dx,
             prop_dist = self.efl,
             wavelength=self.wvl,
-            output_dx=self.dh_dx,
+            output_dx=self.amp_dx,
             output_samples=self.I.shape, 
             shift=(self.shiftx, 0),
             method='mdft')
@@ -1458,7 +1458,7 @@ class ThroughputOptimizer:
     This is substantially more simple because no propagation is actually required
     """
 
-    def __init__(self, amp, wvl, basis, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1):
+    def __init__(self, amp, wvl, basis, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1, point_symmetric=False):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float64)
 
@@ -1474,6 +1474,12 @@ class ThroughputOptimizer:
         self.zonal = False
         self.cost = []
         self.eta = relative_weight
+        self.point_symmetric = point_symmetric
+
+        if self.point_symmetric:
+
+            # Go up to half the apodizer shape, unsure if there needs to be a +1 here
+            self.amp_select[:, :self.amp.shape[0] // 2] = 0
 
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
@@ -1482,10 +1488,17 @@ class ThroughputOptimizer:
         x = np.array(x)
         if not self.zonal:
             self.aplc = np.tensordot(self.basis, x, axes=(0,0))
+        
 
         else:
+            
             # activate
             self.aplc[self.amp_select] = x
+            
+            # If point symmetric, need to account for mirror symmetry
+            if self.point_symmetric:
+                self.aplc += np.fliplr(self.aplc)
+        
 
         # impose constraints
         aplc = np.real(self.aplc)

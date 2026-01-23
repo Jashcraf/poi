@@ -10,7 +10,7 @@ from scipy.ndimage import shift
 
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
-from prysm.propagation import focus_fixed_sampling
+from prysm.propagation import focus_fixed_sampling, unfocus_fixed_sampling
 from prysm.fttools import MatrixDFTExecutor
 
 # Available optimizers
@@ -39,34 +39,24 @@ IWA = 6
 OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
-BANDWIDTH = .10 # percent
-NWVLS = 1
+BANDWIDTH = 10 # percent
+NWVLS = 3
 OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
-pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
+pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512.0_shift_px_py.fits"
 LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.0 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 10000
+MAX_ITERS = 100_000
 core_size = 0.7 # radius in lam/D
 TARGET_CONTRAST = 1e-11
 
-CONTRAST_RELATIVE_WEIGHT = 1e3
-THROUGHPUT_RELATIVE_WEIGHT =  1e-10
+CONTRAST_RELATIVE_WEIGHT = 1 # 1e10 worked here, 1e7 too low for point-symmetric
+THROUGHPUT_RELATIVE_WEIGHT =  1e-20
 #       Binary Contrast
 # 1e-10  [~]     [x]
 #  *1e2  [~]     [x]
 # ---
 
-# For shifting the focal plane mask
-def shift_right(array):
-    shifted_array = np.zeros_like(array)
-    shifted_array[:, 1:] = array[:, :-1]
-    return shifted_array
-
-def shift_left(array):
-    shifted_array = np.zeros_like(array)
-    shifted_array[:, :-1] = array[:, 1:]
-    return shifted_array
 
 if USE_GPU:
     # np switches from numpy to cupy
@@ -83,8 +73,8 @@ band = np.linspace(WVL * (1-half_bw), WVL * (1 + half_bw), NWVLS)
 print(band)
 
 # Set the FPM inner working angle and outer working angle to have margin before dark hole
-FPM_IWA = (1 + half_bw) * IWA
-FPM_OWA = (1 - half_bw) * OWA
+FPM_IWA = IWA#(1 + half_bw) * IWA
+FPM_OWA = OWA#(1 - half_bw) * OWA
 
 # Load the aperture
 aperture = np.array(fits.getdata(pth_to_aperture))
@@ -112,11 +102,13 @@ else:
 
 iss = ImgSamplingSpec(IMG_NPIX, lambd / OVERSAMPLE, lambd)
 focal_plane_mask = annular_mask(iss, FPM_IWA, FPM_OWA, theta_min=AZMIN, theta_max=AZMAX)
-# focal_plane_mask = shift_right(focal_plane_mask)
 
 dh = annular_mask(iss, IWA, OWA, theta_min=AZMIN, theta_max=AZMAX)
 
 ls_mask = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=LS_FRAC, obscuration_ratio=LS_OBSCURATION_RATIO)
+# aperture = lyot_mask(PUPIL_NPIX, pupil_dx=pupil_dx, frac=1.)
+
+# aperture = shift_left(aperture)
 
 
 optlist = []
@@ -136,7 +128,7 @@ for wave in band:
                         ls=ls_mask,
                         weight=CONTRAST_RELATIVE_WEIGHT,
                         cost_function=cost,
-                        point_symmetric=False)
+                        point_symmetric=True)
 
     aplc.set_optimization_method(zonal=True)
     optlist.append(aplc)
@@ -160,17 +152,18 @@ throughput = AmplitudeAPLC(amp=aperture,
 
                         # The cost function is now altered to max core throughput
                         cost_function=core_throughput,
-                        point_symmetric=False,
+                        point_symmetric=True,
                         include_fpm=False)
 
-# throughput = ThroughputOptimizer(amp=aperture - noisy,
-#                                  wvl=wave,
-#                                  basis=None,
-#                                  ls=ls_mask,
-#                                  relative_weight=THROUGHPUT_RELATIVE_WEIGHT)
+throughput = ThroughputOptimizer(amp=aperture,
+                                  wvl=wave,
+                                  basis=None,
+                                  ls=ls_mask,
+                                  relative_weight=THROUGHPUT_RELATIVE_WEIGHT,
+                                  point_symmetric=True)
 
 throughput.set_optimization_method(zonal=True)
-#optlist.append(throughput)
+optlist.append(throughput)
 
 
 # optimization wrapper that sums the gradients and objective functions
@@ -212,12 +205,24 @@ xbar_flipped = np.fliplr(_opt.aplcbar * np.fliplr(_opt.amp_select))
 plt.imshow((xbar - xbar_flipped).get(), cmap="RdBu_r")
 plt.colorbar()
 
+knife_right = _opt.amp_select
+knife_left = np.fliplr(_opt.amp_select)
+b_right = _opt.b * knife_right
+b_left = np.fliplr(_opt.b * knife_left)
+
+focal_knife_right = np.ones_like(np.real(_opt.B))
+focal_knife_right[:, :_opt.B.shape[0] // 2] = 0
+focal_knife_left = np.fliplr(focal_knife_right)
+
+B_right = np.abs(_opt.B)**2 * focal_knife_right
+B_left = np.fliplr(np.abs(_opt.B)**2 * focal_knife_left)
+
 plt.figure()
 plt.subplot(241)
-plt.imshow(np.real(_opt.b).get())
+plt.imshow((b_right - b_left).get() / _opt.amp_select.get(), cmap="Spectral")
 plt.colorbar()
 plt.subplot(242)
-plt.imshow(tnp.abs(_opt.B.get())**2, norm=LogNorm())
+plt.imshow((B_right - B_left).get() / focal_knife_right.get(), cmap="Spectral")
 plt.colorbar()
 plt.subplot(243)
 plt.imshow(np.real(_opt.c * ls_mask).get())
@@ -243,7 +248,7 @@ plt.show()
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
                 memory=10, upper_bounds=tnp.ones(x0.shape),
                 lower_bounds=tnp.zeros(x0.shape))
-opt.iprint = 1
+opt.iprint = 0
 
 # some timing
 t1 = time.perf_counter()
@@ -260,7 +265,7 @@ sigma = 1
 xx = np.linspace(-npx//2, npx//2+1, npx)
 xx, yy = np.meshgrid(xx, xx)
 r = np.hypot(xx, yy)
-kernel =np.exp(-0.5 * (r/sigma)**2)
+kernel = np.exp(-0.5 * (r/sigma)**2)
 
 for jj in range(N_RELAXATIONS):
     
@@ -312,6 +317,20 @@ newmask[aplc.amp_select] = opt.x
 
 if aplc.point_symmetric:
     newmask += np.fliplr(newmask)
+
+# difference the left and right halves
+knife_right = np.ones_like(aplc.amp_select)
+knife_right[:, :newmask.shape[0] // 2] = 0
+knife_left = np.fliplr(knife_right)
+
+b_right = newmask * knife_right
+b_left = np.fliplr(newmask * knife_left)
+
+plt.figure()
+plt.title("Exploring Symmetry of Apodizer solution")
+plt.imshow((b_right - b_left).get(), cmap="Spectral")
+plt.colorbar()
+plt.show()
 
 plt.style.use("bmh")
 fig = plt.figure(figsize=[20,10])
@@ -369,7 +388,7 @@ def prop_coro(aplc, fpm, ls, wave=WVL, tilt=0, include_fpm=True):
         
         # get the tilt phase
         x = np.linspace(-0.5, 0.5, pupil_npix)
-        tilt_phase = np.exp(1j * 2 * np.pi * x * tilt * (WVL / wvl))
+        tilt_phase = np.exp(-1j * 2 * np.pi * x * tilt * (WVL / wvl))
 
         before_fpm = focus_fixed_sampling(
                     wavefunction= aplc * tilt_phase,
@@ -384,7 +403,7 @@ def prop_coro(aplc, fpm, ls, wave=WVL, tilt=0, include_fpm=True):
         if include_fpm:
             before_fpm *= fpm
 
-        before_ls = focus_fixed_sampling(
+        before_ls = unfocus_fixed_sampling(
                     wavefunction=before_fpm,
                     input_dx=img_dx,
                     prop_dist = EFL,

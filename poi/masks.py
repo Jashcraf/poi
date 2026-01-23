@@ -15,9 +15,22 @@ class ImgSamplingSpec:
         dx = lamD/px_per_lamD
         return cls(N=N, dx=dx, lamD=lamD)
 
+def _make_symmetric_xy(N, dx, shift=False):
+    """
+    Controling the precise centering of prysm's xy grids
+    """
+    x, y = coordinates.make_xy_grid(N, dx=dx)
+
+    if shift:
+        shift = dx / 2
+        x += shift
+        y += shift
+
+    return x, y
+
 def inner_core_mask(iss, iwa):
 
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
+    x, y = _make_symmetric_xy(iss.N, dx=iss.dx)
     r, t = coordinates.cart_to_polar(x, y)
     iwa = iwa * iss.lamD
     mask = geometry.circle(iwa, r)
@@ -26,7 +39,7 @@ def inner_core_mask(iss, iwa):
 
 
 def knife_edge_mask(iss, iwa):
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
+    x, y = _make_symmetric_xy(iss.N, dx=iss.dx)
     iwa = iwa * iss.lamD
     mask = x > iwa
 
@@ -34,7 +47,7 @@ def knife_edge_mask(iss, iwa):
 
 
 def circular_mask(iss, iwa):
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
+    x, y = _make_symmetric_xy(iss.N, dx=iss.dx)
     r, t = coordinates.cart_to_polar(x, y)
     iwa = iwa * iss.lamD
     mask = r > iwa
@@ -42,8 +55,8 @@ def circular_mask(iss, iwa):
     return mask
 
 
-def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None):
-    x, y = coordinates.make_xy_grid(iss.N, dx=iss.dx)
+def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None, shift=False):
+    x, y = _make_symmetric_xy(iss.N, dx=iss.dx, shift=shift)
     r, t = coordinates.cart_to_polar(x, y)
     iwa = iwa * iss.lamD
     owa = owa * iss.lamD
@@ -83,9 +96,9 @@ def annular_mask(iss, iwa, owa, theta_min=None, theta_max=None):
     
     return mask
 
-def lyot_mask(pupil_npix, pupil_dx, frac, obscuration_ratio=0.0):
+def lyot_mask(pupil_npix, pupil_dx, frac, obscuration_ratio=0.0, shift=False):
 
-    x, y = coordinates.make_xy_grid(pupil_npix, dx=pupil_dx)
+    x, y = _make_symmetric_xy(pupil_npix, dx=pupil_dx, shift=shift)
     r, t = coordinates.cart_to_polar(x, y)
     rnorm = r / (r.max() * np.sqrt(2))
     ls = np.zeros_like(x)
