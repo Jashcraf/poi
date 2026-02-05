@@ -40,18 +40,18 @@ OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
 BANDWIDTH = 10 # percent
-NWVLS = 3
+NWVLS = 5
 OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512.0_shift_px_py.fits"
-LS_FRAC = 0.9 # Fraction of the pupil radius to use for the Lyot stop
+LS_FRAC = 0.95 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0.0 # Ratio of the Lyot stop obscuration to the pupil radius
-MAX_ITERS = 100_000
+MAX_ITERS = 10000
 core_size = 0.7 # radius in lam/D
 TARGET_CONTRAST = 1e-11
 
 CONTRAST_RELATIVE_WEIGHT = 1 # 1e10 worked here, 1e7 too low for point-symmetric
-THROUGHPUT_RELATIVE_WEIGHT =  1e-20
+THROUGHPUT_RELATIVE_WEIGHT =  10 ** (-1 * 20.3)#1e-20
 #       Binary Contrast
 # 1e-10  [~]     [x]
 #  *1e2  [~]     [x]
@@ -191,7 +191,8 @@ _, _ = opt_contrast_throughput.fg(x0)
 plt.figure()
 plt.subplot(131)
 plt.title("Coro PSF before optimization")
-plt.imshow(opt_contrast_throughput.optlist[0].I.get(), cmap="inferno", norm=LogNorm())
+I = np.abs(opt_contrast_throughput.optlist[0].D).get()
+plt.imshow(I, cmap="inferno", norm=LogNorm())
 plt.colorbar()
 plt.subplot(132)
 plt.title("Re|Pupil Gradient| before optimization")
@@ -216,33 +217,6 @@ focal_knife_left = np.fliplr(focal_knife_right)
 
 B_right = np.abs(_opt.B)**2 * focal_knife_right
 B_left = np.fliplr(np.abs(_opt.B)**2 * focal_knife_left)
-
-plt.figure()
-plt.subplot(241)
-plt.imshow((b_right - b_left).get() / _opt.amp_select.get(), cmap="Spectral")
-plt.colorbar()
-plt.subplot(242)
-plt.imshow((B_right - B_left).get() / focal_knife_right.get(), cmap="Spectral")
-plt.colorbar()
-plt.subplot(243)
-plt.imshow(np.real(_opt.c * ls_mask).get())
-plt.colorbar()
-plt.subplot(244)
-plt.imshow(tnp.abs(_opt.I.get())**2, norm=LogNorm())
-plt.colorbar()
-plt.subplot(245)
-plt.imshow(np.real(_opt.bbar).get())
-plt.colorbar()
-plt.subplot(246)
-plt.imshow(tnp.abs(_opt.Cbar.get())**2, norm=LogNorm())
-plt.colorbar()
-plt.subplot(247)
-plt.imshow(np.real(_opt.cbar).get())
-plt.colorbar()
-plt.subplot(248)
-plt.imshow(tnp.abs(_opt.Ibar.get())**2, norm=LogNorm())
-plt.colorbar()
-plt.show()
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,

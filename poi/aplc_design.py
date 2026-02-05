@@ -212,11 +212,14 @@ class BaseAPLC:
             shift=(-self.shiftx, 0),
             method='mdft')
 
-        I = np.abs(D)**2
-        N = I / self.contrast_norm
+        #I = np.abs(D)**2
+        #N = I / self.contrast_norm
+        
+        # Update the contrast normalization
+        self.cost_function.norm = self.contrast_norm
         
         # Evaluate cost function
-        E = self.cost_function.forward(N[self.dh])
+        E = self.cost_function.forward(D[self.dh])
         E *= self.weight
 
         def plot_x():
@@ -242,8 +245,8 @@ class BaseAPLC:
         # ipdb.set_trace()
         # print(f"Intermediate Cost = {E}")
 
-        self.I = I
-        self.N = N
+        self.I = self.cost_function.I
+        self.N = self.cost_function.N
         self.E = E
         self.cost.append(self.E)
         
@@ -266,14 +269,11 @@ class BaseAPLC:
         self.update(x)
         
         # Backpropagate image intensity to image field gradient
-        Nbar = np.zeros(self.dh.shape, dtype=np.float64)
+        Dbar = np.zeros(self.dh.shape, dtype=np.complex128)
 
         # Backpropagation of cost function might be erroneous
-        Nbar[self.dh] = self.cost_function.reverse(self.N[self.dh])
-        Nbar *= self.weight
-
-        Ibar = Nbar / self.contrast_norm
-        Dbar = 2 * Ibar * self.D
+        Dbar[self.dh] = self.cost_function.reverse(self.D[self.dh])
+        Dbar *= self.weight
 
         # backprop from image to lyot stop
         dbar = focus_fixed_sampling_backprop(
@@ -285,7 +285,6 @@ class BaseAPLC:
             output_samples=self.aplc.shape,
             shift=(0, 0),
             method='mdft')
-
         # backprop lyot stop application - conjugate permits complex ls
         cbar = self.ls.conj() * dbar
 
@@ -296,7 +295,7 @@ class BaseAPLC:
             prop_dist = self.efl,
             wavelength=self.wvl,
             output_dx=self.amp_dx,
-            output_samples=self.I.shape, 
+            output_samples=self.dh.shape, 
             shift=(self.shiftx, 0),
             method='mdft')
 
@@ -326,13 +325,13 @@ class BaseAPLC:
             abar = np.tensordot(self.basis, aplcbar)
         
         # The intermediate gradients
-        self.Ibar = Ibar
         self.Bbar = Bbar
         self.cbar = cbar
         self.Cbar = Cbar
         self.dbar = dbar
         self.Dbar = Dbar
-        self.Nbar = Nbar
+        self.Ibar = self.cost_function.Ibar
+        self.Nbar = self.cost_function.Nbar
 
         if not self.zonal:
             self.abar = abar
@@ -496,19 +495,19 @@ class BaseSPC:
         # Get contrast normalization (approx)
         self.contrast_norm = (np.abs(B)**2).max()
 
-        I = np.abs(B)**2
-        N = I / self.contrast_norm
+        #I = np.abs(B)**2
+        #N = I / self.contrast_norm
         
         # Evaluate cost function
         # Multiplying is a little weird here because MSE gets 
         # kind of thrown off. But this makes it compatible
         # With core throughput optimization as well. Alternatively,
         # We could have self.dh = the core mask?
-        E = self.cost_function.forward(N[self.dh])
+        E = self.cost_function.forward(B[self.dh])
         E *= self.weight
 
-        self.I = I
-        self.N = N
+        self.I = self.cost_function.I
+        self.N = self.cost_function.N
         self.E = E
         self.cost.append(self.E)
 
@@ -528,9 +527,7 @@ class BaseSPC:
         
         # Backpropagate image intensity to image field gradient
         Nbar = np.zeros(self.dh.shape, dtype=np.float64)
-        Nbar[self.dh] = self.cost_function.reverse(self.N[self.dh])
-        Ibar = Nbar / self.contrast_norm * self.weight
-        Bbar = 2 * Ibar * self.B
+        Bbar[self.dh] = self.cost_function.reverse(self.x[self.dh])
 
         # backprop from before fpm to pupil apodizer
         self.bbar = focus_fixed_sampling_backprop(
