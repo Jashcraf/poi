@@ -118,13 +118,14 @@ class MeanSquaredErrorQuadratic:
 
     def forward(self, x):
         err = x - self.target
-        mse_mag = np.sum(err**2)
-        return mse_mag * self.alpha
+        self.mse_mag = np.sum(err**2)
+        return self.mse_mag * self.alpha
 
     def reverse(self, x):
-        err = x - self.target 
-        mse_grad = 2 * err#  / x.size 
-        return mse_grad * self.alpha 
+        Nbar = (x - self.target) * self.alpha
+        Nbar *= 2
+        err = Nbar
+        return err 
 
 class PNorm:
     def __init__(self, target=0, alpha=10):

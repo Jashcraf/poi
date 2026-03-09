@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 import numpy as tnp
 from scipy.ndimage import shift
+import os
 
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
@@ -18,6 +19,7 @@ from prysm.x.optym import (
     F77LBFGSB, # The one that works with Box constraints
 )
 
+# Poi local
 from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
 from poi.aplc_design import AmplitudeAPLC, APLCWrapper, ThroughputOptimizer
 from poi.propagation import convolve_2d
@@ -27,21 +29,21 @@ from poi.cost_functions import (
     MeanSquaredErrorLinear,
     MeanSquaredErrorQuadratic,
     PNorm
-)
+) 
 
 # --- USER INPUT DESIGN PARAMS HERE
 USE_GPU = True # Use GPU for the optimization
 EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.350 # microns
-IMG_NPIX = (512)
-IWA = 3.5
+IMG_NPIX = (256)
+IWA = 6
 OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
 BANDWIDTH = 10 # percent
 NWVLS = 3
-OVERSAMPLE = 8 # pix per lam/D
+OVERSAMPLE = 4 # pix per lam/D
 pth_to_aperture = Path.home() / "poi/hex_pupil_amplitude_6510mm_1024pix.fits"
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512.0_shift_px_py.fits"
 LS_FRAC = 0.95 # Fraction of the pupil radius to use for the Lyot stop
@@ -49,18 +51,21 @@ LS_OBSCURATION_RATIO = 0.0 # Ratio of the Lyot stop obscuration to the pupil rad
 MAX_ITERS = 10000
 core_size = 0.7 # radius in lam/D
 TARGET_CONTRAST = 1e-11
-
 CONTRAST_RELATIVE_WEIGHT = 1 # 1e10 worked here, 1e7 too low for point-symmetric
-THROUGHPUT_RELATIVE_WEIGHT =  10 ** (-20.5)
-#       Binary Contrast
-# 1e-10  [~]     [x]
-#  *1e2  [~]     [x]
-# ---
-
+THROUGHPUT_LOG_WEIGHT = 20.5
+THROUGHPUT_RELATIVE_WEIGHT =  10 ** (-1 * THROUGHPUT_LOG_WEIGHT)
+SAVE_DIR = Path.home() / "poi/Data"
 
 if USE_GPU:
     # np switches from numpy to cupy
     set_backend_to_cupy()
+
+# Configure save directory
+from datetime import datetime
+now = datetime.now()
+filename = f"APLC_{THROUGHPUT_LOG_WEIGHT}_{now.strftime('%Y-%m-%d_%H-%M-%S')}"
+SAVE_DIR = SAVE_DIR / filename
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 tilt_lds = np.arange(0, OWA, 0.05)
 
@@ -144,7 +149,7 @@ throughput = AmplitudeAPLC(amp=aperture,
 
                         # NOTE this is no longer a dark hole,
                         # but a PSF core window
-                        dark_hole=core_mask,
+                        dark_hole=core_mask, 
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
@@ -225,40 +230,6 @@ B_left = np.fliplr(np.abs(_opt.B)**2 * focal_knife_left)
 B_right = np.abs(_opt.B)**2 # * focal_knife_right
 B_left = np.fliplr(B_right)
 
-plt.figure()
-plt.subplot(241)
-plt.title("Pupil RHS-LHS")
-plt.imshow((b_right - b_left).get() / _opt.amp_select.get(), cmap="Spectral")
-plt.colorbar()
-plt.subplot(242)
-plt.title("Focal Plane RHS-LHS")
-plt.imshow((B_right - B_left).get(), cmap="Spectral", norm=LogNorm())
-plt.colorbar()
-plt.subplot(243)
-plt.title("Re[Lyot Field]")
-plt.imshow(np.real(_opt.c * ls_mask).get())
-plt.colorbar()
-plt.subplot(244)
-plt.title("Focal Plane Intensity")
-plt.imshow(tnp.abs(_opt.I.get())**2, norm=LogNorm())
-plt.colorbar()
-plt.subplot(245)
-plt.title("Pupil Plane Gradient")
-plt.imshow(np.real(_opt.bbar).get())
-plt.colorbar()
-plt.subplot(246)
-plt.title("Pre-coro Focal Plane Gradient")
-plt.imshow(tnp.abs(_opt.Cbar.get())**2, norm=LogNorm())
-plt.colorbar()
-plt.subplot(247)
-plt.title("Re[Lyot Plane Gradient]")
-plt.imshow(np.real(_opt.cbar).get())
-plt.colorbar()
-plt.subplot(248)
-plt.title("Focal Plane Gradient")
-plt.imshow(tnp.abs(_opt.Ibar.get())**2, norm=LogNorm())
-plt.colorbar()
-plt.show()
 
 # initialize the optimizer with box constraints
 opt = F77LBFGSB(opt_contrast_throughput.fg, x0,
@@ -284,10 +255,10 @@ r = np.hypot(xx, yy)
 kernel = np.exp(-0.5 * (r/sigma)**2)
 
 for jj in range(N_RELAXATIONS):
-
+    
     newmask = np.zeros_like(aplc.amp, dtype=float)
     newmask[aplc.amp_select] = opt.x
-
+    
     plot_amp_select = aplc.amp_select.copy()
     plot_newmask = newmask.copy()
 
@@ -295,21 +266,9 @@ for jj in range(N_RELAXATIONS):
         plot_amp_select = plot_amp_select.get()
         plot_newmask = plot_newmask.get()
 
-    plt.figure()
-    plt.suptitle(f"Iteration {jj}, check mask construction")
-    plt.subplot(121)
-    plt.imshow(plot_amp_select)
-    plt.colorbar()
-
-    plt.subplot(122)
-    plt.imshow(plot_newmask)
-    plt.colorbar()
-
-    plt.show()
-
     if aplc.symmetry == "point":
         newmask += np.fliplr(newmask)
-
+    
     elif aplc.symmetry == "quadrant":
         Q1 = np.copy(newmask)
         newmask += np.fliplr(Q1)
@@ -329,7 +288,7 @@ for jj in range(N_RELAXATIONS):
             opt.step()
     except StopIteration:
         pass
-
+    
     print(f"Time to Optimizer for {MAX_ITERS}")
     print(time.perf_counter() - t1)
 
@@ -352,12 +311,6 @@ knife_left = np.fliplr(knife_right)
 
 b_right = newmask * knife_right
 b_left = np.flipud(newmask * knife_right)
-
-plt.figure()
-plt.title("Exploring Symmetry of Apodizer solution")
-plt.imshow((b_right - b_left).get(), cmap="Spectral")
-plt.colorbar()
-plt.show()
 
 plt.style.use("bmh")
 fig = plt.figure(figsize=[20,10])
@@ -412,7 +365,7 @@ def prop_coro(aplc, fpm, ls, wave=WVL, tilt=0, include_fpm=True):
     coro_img_onax_intensity = 0
 
     for wvl in wave:
-
+        
         # get the tilt phase
         x = np.linspace(-0.5, 0.5, pupil_npix)
         tilt_phase = np.exp(-1j * 2 * np.pi * x * tilt * (WVL / wvl))
@@ -560,3 +513,53 @@ ax5.set_ylabel('Normalized Intensity')
 ax5.legend()
 plt.savefig('coronagraph_throughput_and_contrast.pdf')
 plt.show()
+
+# Clean up and save
+mdft.clear()
+
+if hasattr(aperture, "get"):
+    aperture = aperture.get()
+
+if hasattr(newmask, "get"):
+    newmask = newmask.get()
+
+if hasattr(focal_plane_mask, "get"):
+    focal_plane_mask = focal_plane_mask.get()
+
+if hasattr(ls_mask, "get"):
+    ls_mask = ls_mask.get()
+
+# Construct fits headers
+hdu_aper = fits.PrimaryHDU(aperture.astype(tnp.float64))
+hdu_apod = fits.PrimaryHDU(newmask.astype(tnp.float64))
+hdu_fpm = fits.PrimaryHDU(focal_plane_mask.astype(tnp.float64))
+hdu_lyot = fits.PrimaryHDU(ls_mask.astype(tnp.float64))
+
+# Add sampling parameters to apodizer
+#################00000000############
+hdu_apod.header["NPIX"] = newmask.shape[0]
+hdu_apod.header["DX"] = (EPD, "[mm]")
+hdu_apod.header["F/#"] = 40
+hdu_apod.header["EFL"] = (EFL, '[mm]')
+hdu_apod.header["CEN WVL"] = (WVL, '[microns]')
+hdu_apod.header["IWA [lam/D]"] = (IWA, "[lam/D]")
+hdu_apod.header["OWA [lam/D]"] = (OWA, "[lam/D]")
+hdu_apod.header["AZMIN"] = (AZMIN, "[deg]")
+hdu_apod.header["AZMAX"] = (AZMAX, "[deg]")
+hdu_apod.header["BW"] = (BANDWIDTH, "[%]")
+hdu_apod.header["NWVLS"] = NWVLS
+hdu_apod.header["OVERSAMPLE"] = (OVERSAMPLE, "[pix/lam/D]")
+hdu_apod.header["LS FRAC RADIUS"] = LS_FRAC
+hdu_apod.header["LS OBST RADIUS"] = LS_OBSCURATION_RATIO
+
+# Add focal-plane specific parameters to FPM
+hdu_fpm.header["FPM IWA"] = (FPM_IWA, "[lam/D]")
+hdu_fpm.header["FPM OWA"] = (FPM_OWA, "[lam/D]")
+hdu_fpm.header["DX"] = (1/OVERSAMPLE, "[lam/D/pix]")
+hdu_fpm.header["NPIX"] = focal_plane_mask.shape[0]
+
+
+hdu_apod.writeto(SAVE_DIR / f"apodizer_{WVL}cenwvl_{NWVLS}wvls_{BANDWIDTH}%.fits")
+hdu_lyot.writeto(SAVE_DIR / f"lyot_stop.fits")
+hdu_fpm.writeto(SAVE_DIR / f"fpm_{IWA}IWA_{OWA}OWA_{OVERSAMPLE}OS_{AZMIN}min_{AZMAX}max.fits")
+hdu_aper.writeto(SAVE_DIR / f"aperture.fits")
