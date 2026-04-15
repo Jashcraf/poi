@@ -27,7 +27,7 @@ from poi.cost_functions import (
     MeanSquaredErrorLinear,
     MeanSquaredErrorQuadratic,
     PNorm
-) 
+)
 
 # --- USER INPUT DESIGN PARAMS HERE
 USE_GPU = True # Use GPU for the optimization
@@ -35,7 +35,7 @@ EPD = 24.4381  # milimeters
 EFL = EPD * 40 # milimeters
 WVL = 0.350 # microns
 IMG_NPIX = (256)
-IWA = 6
+IWA = 3
 OWA = 20
 AZMIN = -65 / 2 # Defines the angular extend of the dark zone
 AZMAX = 65 / 2
@@ -51,7 +51,7 @@ core_size = 0.7 # radius in lam/D
 TARGET_CONTRAST = 1e-11
 
 CONTRAST_RELATIVE_WEIGHT = 1 # 1e10 worked here, 1e7 too low for point-symmetric
-THROUGHPUT_RELATIVE_WEIGHT =  1e-20
+THROUGHPUT_RELATIVE_WEIGHT =  1e-15
 #       Binary Contrast
 # 1e-10  [~]     [x]
 #  *1e2  [~]     [x]
@@ -144,7 +144,7 @@ throughput = AmplitudeAPLC(amp=aperture,
 
                         # NOTE this is no longer a dark hole,
                         # but a PSF core window
-                        dark_hole=core_mask, 
+                        dark_hole=core_mask,
                         dh_dx=img_dx,
                         fpm=focal_plane_mask,
                         ls=ls_mask,
@@ -268,10 +268,10 @@ r = np.hypot(xx, yy)
 kernel = np.exp(-0.5 * (r/sigma)**2)
 
 for jj in range(N_RELAXATIONS):
-    
+
     newmask = np.zeros_like(aplc.amp, dtype=float)
     newmask[aplc.amp_select] = opt.x
-    
+
     plot_amp_select = aplc.amp_select.copy()
     plot_newmask = newmask.copy()
 
@@ -307,7 +307,7 @@ for jj in range(N_RELAXATIONS):
             opt.step()
     except StopIteration:
         pass
-    
+
     print(f"Time to Optimizer for {MAX_ITERS}")
     print(time.perf_counter() - t1)
 
@@ -385,7 +385,7 @@ def prop_coro(aplc, fpm, ls, wave=WVL, tilt=0, include_fpm=True):
     coro_img_onax_intensity = 0
 
     for wvl in wave:
-        
+
         # get the tilt phase
         x = np.linspace(-0.5, 0.5, pupil_npix)
         tilt_phase = np.exp(-1j * 2 * np.pi * x * tilt * (WVL / wvl))

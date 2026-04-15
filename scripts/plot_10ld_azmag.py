@@ -10,7 +10,7 @@ Regardless, herein lies an attempt at a tutorial to performing the APLC design m
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 import hwostyle
-hwostyle.use("light")
+# hwostyle.use("light")
 from tqdm import tqdm
 from astropy.io import fits
 from pathlib import Path
@@ -27,10 +27,10 @@ from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
 from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 import sys
 
-AZMAGS = [40.0, 65.0, 80.0, 95.0, 110.0, 135.0, 150.0, 165.0, 180.0]
-
 AZMAGS = [60.0, 75.0, 90.0, 105.0, 120.0, 135.0, 150.0, 165.0, 180.0]
 MULTIPLIERS = [10, 10, 10, 10, 10, 8, 10, 10, 7]
+MULTIPLIERS = [10 for i in AZMAGS] 
+
 # Not enough in the okabe cycle ;-;
 okabe_colorblind8 = ['#E69F00', '#56B4E9', '#009E73',
                      '#F0E442', '#0072B2', '#D55E00', '#CC79A7',
@@ -62,19 +62,16 @@ for color, AZMAG, MULTIPLIER in zip(colors, AZMAGS, MULTIPLIERS):
     pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
     LS_FRAC = 0.95 # Fraction of the pupil radius to use for the Lyot stop
     LS_OBSCURATION_RATIO = 0.00 # Ratio of the Lyot stop obscuration to the pupil radius
-    MAX_ITERS = 100_000
     core_size = 0.7 # radius in lam/D
     # 1e-11 produces good monochromatic designs
 
-    THROUGHPUT_LOG_WEIGHT = 13
-    THROUGHPUT_RELATIVE_WEIGHT = 10 ** (-1 * THROUGHPUT_LOG_WEIGHT)
     # ---
 
     if USE_GPU:
         # np switches from numpy to cupy
         set_backend_to_cupy()
 
-    tilt_lds = np.arange(0, OWA, 0.5)
+    tilt_lds = [12] # np.arange(0, OWA, 0.5)
 
     mdft = MatrixDFTExecutor()
     mdft.clear()
@@ -82,12 +79,10 @@ for color, AZMAG, MULTIPLIER in zip(colors, AZMAGS, MULTIPLIERS):
     # Set up the bandpass
     half_bw = BANDWIDTH / 2 / 100
     band = np.linspace(WVL * (1-half_bw), WVL * (1 + half_bw), NWVLS)
-    print(band)
 
     # Set the FPM inner working angle and outer working angle to have margin before dark hole
-    FPM_IWA = (1 + 0*half_bw) * IWA
-    FPM_OWA = (1 - 0*half_bw) * OWA
-    print(f"FPM = {FPM_IWA}-{FPM_OWA}")
+    FPM_IWA = (1) * IWA
+    FPM_OWA = (1) * OWA
 
     # Load the aperture
     aperture = np.round(np.array(fits.getdata(pth_to_aperture)))
@@ -221,19 +216,11 @@ for color, AZMAG, MULTIPLIER in zip(colors, AZMAGS, MULTIPLIERS):
         # plt.show()
 
         value_in_aperture = np.sum(coro_I[mask==1])
-        throughput_07.append(value_in_aperture / eta_0)
-
-    # get the bmh colors
-    # colors = plt.rcParams['axes.prop_cycle'].by_key()['color'][1:]
-
-
-    # plt.plot(tilt_lds.get(), np.array(throughput).get(), linestyle='dashed', color=color, label=f"{IWA}"+r"$\lambda/D$")
-    plt.plot(tilt_lds.get(), np.array(throughput_07).get(), color=color, linestyle='solid', label=r"$\theta=$"+f"{AZMAG}"+r"$^{\circ}$")
+        throughput_07 = value_in_aperture / eta_0
+        plt.scatter(AZMAG, throughput_07.get(), marker="o", linestyle="None", color=colors[0], s=50)
 
 #plt.plot(tilt_lds.get(), (np.ones_like(np.array(throughput_07)) * limit).get(), linestyle='dashed', color='black', label='Aperture Limit')
-plt.legend()
-plt.xlabel('Angular Separation, '+r'$\lambda / D$')
+plt.xlabel('Azimuthal Extent, '+r'$\theta$')
 plt.ylabel('Core Throughput, '+r'$r \leq 0.7 \lambda/D$')
-plt.ylim(0, 0.7)
-plt.xlim(0, OWA)
+plt.ylim(0, 1.)
 plt.show()
