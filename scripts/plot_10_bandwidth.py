@@ -10,7 +10,7 @@ Regardless, herein lies an attempt at a tutorial to performing the APLC design m
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 import hwostyle
-# hwostyle.use("light")
+hwostyle.use("light")
 from tqdm import tqdm
 from astropy.io import fits
 from pathlib import Path
@@ -27,8 +27,13 @@ from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
 from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 import sys
 
-BANDWIDTHS = [4., 6., 8., 12., 14., 16., 18., 20., 22., 24., 26., 28., 30.]
+BANDWIDTHS = [4., 6., 8., 12., 14., 16., 18., 20., 22., 24., 26., 28., 30.,
+              32., 34., 36., 38., 40., 42., 44., 46., 48., 50.]
+
 MULTIPLIERS = np.full_like(BANDWIDTHS, 10.) 
+# MULTIPLIERS[-2:] = 9.
+FAILED_SOLUTION = np.ones_like(BANDWIDTHS)
+FAILED_SOLUTION[-2:] = 0
 
 # Not enough in the okabe cycle ;-;
 okabe_colorblind8 = ['#E69F00', '#56B4E9', '#009E73',
@@ -41,9 +46,9 @@ n_lines = len(BANDWIDTHS)
 colors = [cmap(i / (n_lines - 1)) for i in range(n_lines)]
 
 plt.figure()
-plt.title("Field PSF Core Throughput")
+plt.title(r"$10 \lambda_0 / D_C$"+" PSF Core Throughput")
 # Construct coronagraph and build throughput plot
-for color, BANDWIDTH, MULTIPLIER in zip(colors, BANDWIDTHS, MULTIPLIERS):
+for color, BANDWIDTH, MULTIPLIER, FAILED in zip(colors, BANDWIDTHS, MULTIPLIERS, FAILED_SOLUTION):
     IWA = 6
     # --- USER INPUT DESIGN PARAMS HERE
     USE_GPU = True # Use GPU for the optimization
@@ -69,7 +74,7 @@ for color, BANDWIDTH, MULTIPLIER in zip(colors, BANDWIDTHS, MULTIPLIERS):
         # np switches from numpy to cupy
         set_backend_to_cupy()
 
-    tilt_lds = [12] # np.arange(0, OWA, 0.5)
+    tilt_lds = [10] # np.arange(0, OWA, 0.5)
 
     mdft = MatrixDFTExecutor()
     mdft.clear()
@@ -215,10 +220,17 @@ for color, BANDWIDTH, MULTIPLIER in zip(colors, BANDWIDTHS, MULTIPLIERS):
 
         value_in_aperture = np.sum(coro_I[mask==1])
         throughput_07 = value_in_aperture / eta_0
-        plt.scatter(BANDWIDTH, throughput_07.get(), marker="o", linestyle="None", color=colors[0], s=50)
+        if FAILED == 1:
+            plt.scatter(BANDWIDTH, throughput_07.get(), marker="o", linestyle="None", c=colors[0], s=50)
+        else:
+            plt.scatter(BANDWIDTH, throughput_07.get(), marker="x", linestyle="None", c=colors[1], s=50)
 
 #plt.plot(tilt_lds.get(), (np.ones_like(np.array(throughput_07)) * limit).get(), linestyle='dashed', color='black', label='Aperture Limit')
 plt.xlabel('Bandwidth, %')
 plt.ylabel('Core Throughput, '+r'$r \leq 0.7 \lambda/D$')
 plt.ylim(0, 1.)
+plt.xlim(0., BANDWIDTHS[-1]+1)
+plt.scatter(-10, -10, marker="o", c=colors[0], s=50, label="Succesful Solution")
+plt.scatter(-10, -10, marker="x", c=colors[1], s=50, label="Failed Solution")
+plt.legend()
 plt.show()
