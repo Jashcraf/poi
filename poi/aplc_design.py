@@ -215,17 +215,31 @@ class BaseAPLC:
             fpm = self.fpm
         else:
             fpm = np.ones_like(self.fpm)
-
-        c, B, Bp = to_fpm_and_back(
+        
+        B = focus_fixed_sampling(
             wavefunction=b,
-            dx=self.amp_dx,
-            efl=self.efl,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
             wavelength=self.wvl,
-            fpm=fpm,
-            fpm_dx=self.dh_dx,
-            method='mdft',
-            return_more=True)
+            output_dx=self.dh_dx,
+            output_samples=self.dh.shape,
+            shift=(-self.shiftx, -self.shifty),
+            method='mdft')
 
+        # apply focal plane mask
+        C = B * fpm
+
+        # To lyot plane
+        c = focus_fixed_sampling(
+            wavefunction=C,
+            input_dx=self.dh_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.amp_dx,
+            output_samples=self.amp.shape,
+            shift=(0, 0),
+            method='mdft')
+        
         # Get contrast normalization (approx)
         self.contrast_norm = (np.abs(B)**2).max()
 
@@ -297,21 +311,33 @@ class BaseAPLC:
         # backprop lyot stop application - conjugate permits complex ls
         self.cbar = self.ls.conj() * dbar
 
-        if self.include_fpm:
-            fpm = self.fpm
-        else:
-            fpm = np.ones_like(self.fpm)
-
-        self.bbar, self.Cbar, _  = to_fpm_and_back_backprop(
-            wavefunction=dbar,
-            dx=self.amp_dx,
-            efl=self.efl,
+        # backprop from before stop to focal plane mask
+        Cbar = focus_fixed_sampling_backprop(
+            wavefunction=self.cbar,
+            input_dx=self.dh_dx,
+            prop_dist = self.efl,
             wavelength=self.wvl,
-            fpm=fpm,
-            fpm_dx=self.dh_dx,
-            method='mdft',
-            return_more=True)
+            output_dx=self.amp_dx,
+            output_samples=self.I.shape, 
+            shift=(self.shiftx, 0),
+            method='mdft')
 
+        # backprop fpm application
+        if self.include_fpm:
+            Bbar = self.fpm.conj() * Cbar
+        else:
+            Bbar = Cbar
+
+        # backprop from before fpm to pupil apodizer
+        self.bbar = focus_fixed_sampling_backprop(
+            wavefunction=Bbar,
+            input_dx=self.amp_dx,
+            prop_dist = self.efl,
+            wavelength=self.wvl,
+            output_dx=self.dh_dx,
+            output_samples=self.aplc.shape,
+            shift=(0, 0),
+            method='mdft')
 
         # See note in self.update about this function definition
         # tl;dr, don't use BaseAPLC by itself. This function operates
