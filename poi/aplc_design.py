@@ -3,7 +3,8 @@ from prysm.propagation import (
         focus_fixed_sampling,
         focus_fixed_sampling_backprop,
         to_fpm_and_back,
-        to_fpm_and_back_backprop
+        to_fpm_and_back_backprop,
+        Wavefront
 )
 from prysm import coordinates, geometry
 from prysm.x.optym import F77LBFGSB
@@ -143,6 +144,8 @@ class BaseAPLC:
         self.dh_target = 0
         self.include_fpm = include_fpm
         self.symmetry = symmetry
+
+        # Prepare appropriate MDFT executor
 
         if cost_function is None:
             self.cost_function = MeanSquaredError(target=self.dh_target)
