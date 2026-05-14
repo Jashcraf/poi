@@ -1,26 +1,43 @@
-from prysm.mathops import np, fft
-from prysm.propagation import (
-        focus_fixed_sampling,
-        focus_fixed_sampling_backprop,
-        unfocus_fixed_sampling,
-        unfocus_fixed_sampling_backprop
-)
+from time import sleep
+
+import ipdb
+import numpy as tnp
 from prysm import coordinates, geometry
+from prysm.mathops import fft, np
+from prysm.propagation import (
+    focus_fixed_sampling,
+    focus_fixed_sampling_backprop,
+    unfocus_fixed_sampling,
+    unfocus_fixed_sampling_backprop,
+)
 from prysm.x.optym import F77LBFGSB
 from scipy.optimize import minimize
-import numpy as tnp
 from tqdm import tqdm
-from time import sleep
-import ipdb
 
-from .propagation import ft_fwd, ft_rev, convolve_2d
 from .cost_functions import MeanSquaredErrorQuadratic as MeanSquaredError
+from .propagation import convolve_2d, ft_fwd, ft_rev
 
 
 class BaseAPLC:
-    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
-                 basis, initial_amplitude, activation, weight,
-                 cost_function, include_fpm, alpha, point_symmetric):
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        dark_hole,
+        dh_dx,
+        fpm,
+        ls,
+        basis,
+        initial_amplitude,
+        activation,
+        weight,
+        cost_function,
+        include_fpm,
+        alpha,
+        point_symmetric,
+    ):
         """
         Base class for optimizing Apodized Pupil Lyot Coronagraphs,
         not intended to be used directly. Instead, use
@@ -75,13 +92,13 @@ class BaseAPLC:
             f(x) = f(-x). This is useful for annular / mirror symmetric
             focal planes to substantially reduce the computational complexity.
             For this preliminary implementation, we will always assume that
-            the user supplies the the apodizer on the **RIGHT** side of the 
+            the user supplies the the apodizer on the **RIGHT** side of the
             array. If point_symmetric=True, it will be copied to the left
             half of the array.
 
             Note
             ----
-            There is a symmetry ambiguity if the apodizer array is odd-valued, 
+            There is a symmetry ambiguity if the apodizer array is odd-valued,
             which may be the case for FFT-centered arrays. This is troublesome,
             because the user will supply some guess array that we don't know
             the shape of a priori. Wait, maybe we do
@@ -90,13 +107,13 @@ class BaseAPLC:
         # Define initial amplitude if not present
         if initial_amplitude is None:
             aplc = np.ones(amp.shape, dtype=np.float64)
-        
+
         # Set up activation function
         if activation is None:
             self.activation = Dummy(1)
         else:
             self.activation = activation
-        
+
         # Get the even-ness of the apodizer
         self.apodizer_shape = aplc.shape
 
@@ -131,29 +148,28 @@ class BaseAPLC:
             self.cost_function = cost_function
 
         if self.point_symmetric == True:
-
             # Go up to half the apodizer shape, unsure if there needs to be a +1 here
-            self.amp_select[:, :self.apodizer_shape[0] // 2] = 0
+            self.amp_select[:, : self.apodizer_shape[0] // 2] = 0
 
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
 
     def update(self, x):
 
-        self.shiftx = 0.
-        
+        self.shiftx = 0.0
+
         # Convert lists to arrays if that's how they are supplied
         x = np.asarray(x)
 
         if not self.zonal:
-            self.aplc = np.tensordot(self.basis, x, axes=(0,0))
+            self.aplc = np.tensordot(self.basis, x, axes=(0, 0))
         else:
             # activate
             self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
             activated_x = self.activation.forward(x)
 
         self.aplc[self.amp_select] = activated_x
-        
+
         # If point symmetric, need to account for mirror symmetry
         if self.point_symmetric:
             self.aplc += np.fliplr(self.aplc)
@@ -171,15 +187,16 @@ class BaseAPLC:
         B = focus_fixed_sampling(
             wavefunction=b,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(self.shiftx, 0),
-            method='mdft')
-        
+            method="mdft",
+        )
+
         # Get contrast normalization (approx)
-        self.contrast_norm = (np.abs(B)**2).max()
+        self.contrast_norm = (np.abs(B) ** 2).max()
 
         # apply focal plane mask
         if self.include_fpm:
@@ -191,12 +208,13 @@ class BaseAPLC:
         c = focus_fixed_sampling(
             wavefunction=C,
             input_dx=self.dh_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.amp_dx,
             output_samples=self.amp.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # apply lyot stop
         d = c * self.ls
@@ -205,22 +223,24 @@ class BaseAPLC:
         D = focus_fixed_sampling(
             wavefunction=d,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(-self.shiftx, 0),
-            method='mdft')
+            method="mdft",
+        )
 
-        I = np.abs(D)**2
+        I = np.abs(D) ** 2
         N = I / self.contrast_norm
-        
+
         # Evaluate cost function
         E = self.cost_function.forward(N[self.dh])
         E *= self.weight
 
         def plot_x():
             import matplotlib.pyplot as plt
+
             plt.figure(figsize=[10, 5])
             plt.subplot(121)
             plt.imshow(self.amp, cmap="grey")
@@ -229,10 +249,11 @@ class BaseAPLC:
             plt.imshow(self.aplc, cmap="inferno")
             plt.colorbar()
             plt.show()
-        
+
         def plot_n():
             import matplotlib.pyplot as plt
             from matplotlib.colors import LogNorm
+
             plt.figure()
             plt.imshow(N * self.dh, cmap="inferno", norm=LogNorm(vmin=1e-10, vmax=1))
             plt.colorbar()
@@ -246,7 +267,7 @@ class BaseAPLC:
         self.N = N
         self.E = E
         self.cost.append(self.E)
-        
+
         # the intermediate fields
         self.b = b
         self.B = B
@@ -261,10 +282,10 @@ class BaseAPLC:
         return self.E
 
     def rev(self, x):
-        
+
         # Evaluate forward model
         self.update(x)
-        
+
         # Backpropagate image intensity to image field gradient
         Nbar = np.zeros(self.dh.shape, dtype=np.float64)
 
@@ -279,12 +300,13 @@ class BaseAPLC:
         dbar = focus_fixed_sampling_backprop(
             wavefunction=Dbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # backprop lyot stop application - conjugate permits complex ls
         cbar = self.ls.conj() * dbar
@@ -293,12 +315,13 @@ class BaseAPLC:
         Cbar = focus_fixed_sampling_backprop(
             wavefunction=cbar,
             input_dx=self.dh_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.amp_dx,
-            output_samples=self.I.shape, 
+            output_samples=self.I.shape,
             shift=(self.shiftx, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # backprop fpm application
         if self.include_fpm:
@@ -310,21 +333,22 @@ class BaseAPLC:
         self.bbar = focus_fixed_sampling_backprop(
             wavefunction=Bbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
-        
+            method="mdft",
+        )
+
         # See note in self.update about this function definition
         # tl;dr, don't use BaseAPLC by itself
         self._setup_coefficients_backprop()
-        
+
         # Backpropagate to modal basis if appropriate
         if not self.zonal:
             abar = np.tensordot(self.basis, aplcbar)
-        
+
         # The intermediate gradients
         self.Ibar = Ibar
         self.Bbar = Bbar
@@ -340,11 +364,11 @@ class BaseAPLC:
 
         else:
             xbar = self.aplcbar[self.amp_select]
-            
+
             # Add the gradient on the other side of the pupil
             # if self.point_symmetric:
             #     xbar += self.aplcbar[np.fliplr(self.amp_select)]
-            
+
             abar = self.activation.backprop(xbar)
             return abar
 
@@ -355,9 +379,23 @@ class BaseAPLC:
 
 
 class BaseSPC:
-    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
-                 basis, initial_amplitude, activation, weight,
-                 cost_function, include_fpm, alpha, point_symmetric):
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        dark_hole,
+        dh_dx,
+        basis,
+        initial_amplitude,
+        activation,
+        weight,
+        cost_function,
+        include_fpm,
+        alpha,
+        point_symmetric,
+    ):
         """
         Base class for optimizing Shaped Pupil Coronagraphs,
         which do not have focal plane masks or Lyot stops
@@ -407,13 +445,13 @@ class BaseSPC:
             f(x) = f(-x). This is useful for annular / mirror symmetric
             focal planes to substantially reduce the computational complexity.
             For this preliminary implementation, we will always assume that
-            the user supplies the the apodizer on the **RIGHT** side of the 
+            the user supplies the the apodizer on the **RIGHT** side of the
             array. If point_symmetric=True, it will be copied to the left
             half of the array.
 
             Note
             ----
-            There is a symmetry ambiguity if the apodizer array is odd-valued, 
+            There is a symmetry ambiguity if the apodizer array is odd-valued,
             which may be the case for FFT-centered arrays. This is troublesome,
             because the user will supply some guess array that we don't know
             the shape of a priori. Wait, maybe we do
@@ -422,7 +460,7 @@ class BaseSPC:
         # Define initial amplitude if not present
         if initial_amplitude is None:
             aplc = np.ones(amp.shape, dtype=np.float64)
-        
+
         # Set up activation function
         if activation is None:
             self.activation = Dummy(1)
@@ -462,17 +500,16 @@ class BaseSPC:
         self.zonal = zonal
 
     def update(self, x):
-        
+
         # Convert lists to arrays if that's how they are supplied
         x = np.asarray(x)
 
         if not self.zonal:
-            self.aplc = np.tensordot(self.basis, x, axes=(0,0))
+            self.aplc = np.tensordot(self.basis, x, axes=(0, 0))
         else:
-
             self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
             self.aplc[self.amp_select] = self.activation.forward(x)
-        
+
         # NOTE: This function is not defined in this base class because
         # of how different the PhaseAPLC and AmplitudeAPLC behave. See
         # Their respective definitions for the forward and adjoint of
@@ -486,21 +523,22 @@ class BaseSPC:
         B = focus_fixed_sampling(
             wavefunction=b,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(0, 0),
-            method='mdft')
-        
-        # Get contrast normalization (approx)
-        self.contrast_norm = (np.abs(B)**2).max()
+            method="mdft",
+        )
 
-        I = np.abs(B)**2
+        # Get contrast normalization (approx)
+        self.contrast_norm = (np.abs(B) ** 2).max()
+
+        I = np.abs(B) ** 2
         N = I / self.contrast_norm
-        
+
         # Evaluate cost function
-        # Multiplying is a little weird here because MSE gets 
+        # Multiplying is a little weird here because MSE gets
         # kind of thrown off. But this makes it compatible
         # With core throughput optimization as well. Alternatively,
         # We could have self.dh = the core mask?
@@ -522,10 +560,10 @@ class BaseSPC:
         return self.E
 
     def rev(self, x):
-        
+
         # Evaluate forward model
         self.update(x)
-        
+
         # Backpropagate image intensity to image field gradient
         Nbar = np.zeros(self.dh.shape, dtype=np.float64)
         Nbar[self.dh] = self.cost_function.reverse(self.N[self.dh])
@@ -536,21 +574,22 @@ class BaseSPC:
         self.bbar = focus_fixed_sampling_backprop(
             wavefunction=Bbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
-        
+            method="mdft",
+        )
+
         # See note in self.update about this function definition
         # tl;dr, don't use BaseAPLC by itself
         self._setup_coefficients_backprop()
-        
+
         # Backpropagate to modal basis if appropriate
         if not self.zonal:
             abar = np.tensordot(self.basis, aplcbar)
-        
+
         # The intermediate gradients
         self.Ibar = Ibar
         self.Bbar = Bbar
@@ -573,16 +612,44 @@ class BaseSPC:
 
 
 class AmplitudeAPLC(BaseAPLC):
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        dark_hole,
+        dh_dx,
+        fpm,
+        ls,
+        basis=None,
+        initial_amplitude=None,
+        activation=None,
+        weight=1,
+        cost_function=None,
+        include_fpm=True,
+        alpha=None,
+        point_symmetric=False,
+    ):
 
-    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
-                 basis=None, initial_amplitude=None, activation=None, weight=1,
-                 cost_function=None, include_fpm=True, alpha=None,
-                 point_symmetric=False):
-
-
-        super().__init__(amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
-                       basis, initial_amplitude, activation, weight,
-                       cost_function, include_fpm, alpha, point_symmetric)
+        super().__init__(
+            amp,
+            amp_dx,
+            efl,
+            wvl,
+            dark_hole,
+            dh_dx,
+            fpm,
+            ls,
+            basis,
+            initial_amplitude,
+            activation,
+            weight,
+            cost_function,
+            include_fpm,
+            alpha,
+            point_symmetric,
+        )
 
     def _setup_coefficients(self):
         self.aplc = np.real(self.aplc)
@@ -592,15 +659,41 @@ class AmplitudeAPLC(BaseAPLC):
 
 
 class PhaseAPLC(BaseAPLC):
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        dark_hole,
+        dh_dx,
+        fpm,
+        ls,
+        basis=None,
+        initial_amplitude=None,
+        activation=None,
+        weight=1,
+        include_fpm=True,
+        point_symmetric=False,
+    ):
 
-    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
-                 basis=None, initial_amplitude=None, activation=None, weight=1,
-                 include_fpm=True, point_symmetric=False):
-
-        super().__init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx, fpm, ls,
-                       basis=basis, initial_amplitude=initial_amplitude,
-                       activation=activation, weight=weight,
-                       include_fpm=include_fpm, point_symmetric=point_symmetric)
+        super().__init__(
+            self,
+            amp,
+            amp_dx,
+            efl,
+            wvl,
+            dark_hole,
+            dh_dx,
+            fpm,
+            ls,
+            basis=basis,
+            initial_amplitude=initial_amplitude,
+            activation=activation,
+            weight=weight,
+            include_fpm=include_fpm,
+            point_symmetric=point_symmetric,
+        )
 
     def _setup_coefficients(self):
         self.W = (2 * np.pi / self.wvl) * self.aplc
@@ -608,19 +701,42 @@ class PhaseAPLC(BaseAPLC):
 
     def _setup_coefficients_backprop(self):
         self.aplcbar = np.imag(self.bbar * np.conj(self.b))
-        self.aplcbar *= 2 * np.pi / self.wvl 
+        self.aplcbar *= 2 * np.pi / self.wvl
 
 
 class AmplitudeSPC(BaseSPC):
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        dark_hole,
+        dh_dx,
+        basis=None,
+        initial_amplitude=None,
+        activation=None,
+        weight=1,
+        cost_function=None,
+        include_fpm=True,
+        alpha=None,
+    ):
 
-    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
-                 basis=None, initial_amplitude=None, activation=None, weight=1,
-                 cost_function=None, include_fpm=True, alpha=None):
-
-
-        super().__init__(amp, amp_dx, efl, wvl, dark_hole, dh_dx,
-                       basis, initial_amplitude, activation, weight,
-                       cost_function, include_fpm, alpha)
+        super().__init__(
+            amp,
+            amp_dx,
+            efl,
+            wvl,
+            dark_hole,
+            dh_dx,
+            basis,
+            initial_amplitude,
+            activation,
+            weight,
+            cost_function,
+            include_fpm,
+            alpha,
+        )
 
     def _setup_coefficients(self):
         self.aplc = np.real(self.aplc)
@@ -630,15 +746,35 @@ class AmplitudeSPC(BaseSPC):
 
 
 class PhaseSPC(BaseSPC):
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        dark_hole,
+        dh_dx,
+        basis=None,
+        initial_amplitude=None,
+        activation=None,
+        weight=1,
+        include_fpm=True,
+    ):
 
-    def __init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
-                 basis=None, initial_amplitude=None, activation=None, weight=1,
-                 include_fpm=True):
-
-        super().__init__(self, amp, amp_dx, efl, wvl, dark_hole, dh_dx,
-                       basis=basis, initial_amplitude=initial_amplitude,
-                       activation=activation, weight=weight,
-                       include_fpm=include_fpm)
+        super().__init__(
+            self,
+            amp,
+            amp_dx,
+            efl,
+            wvl,
+            dark_hole,
+            dh_dx,
+            basis=basis,
+            initial_amplitude=initial_amplitude,
+            activation=activation,
+            weight=weight,
+            include_fpm=include_fpm,
+        )
 
     def _setup_coefficients(self):
         self.W = (2 * np.pi / self.wvl) * self.aplc
@@ -646,7 +782,7 @@ class PhaseSPC(BaseSPC):
 
     def _setup_coefficients_backprop(self):
         self.aplcbar = np.imag(self.bbar * np.conj(self.b))
-        self.aplcbar *= 2 * np.pi / self.wvl 
+        self.aplcbar *= 2 * np.pi / self.wvl
 
 
 class Sigmoid:
@@ -676,14 +812,12 @@ class Sigmoid:
 
 
 class Dummy:
-
     def __init__(self, a):
-        """Activation function that does nothing
-        """
+        """Activation function that does nothing"""
         self.a = 1
         self.x0 = 0
 
-    def forward(self,x):
+    def forward(self, x):
         return x
 
     def backprop(self, xbar):
@@ -695,9 +829,9 @@ class BinarizationPenalty:
         self.weight = weight
 
     def update(self, x):
-        inner = (1 - x) * x 
+        inner = (1 - x) * x
         self.E = self.weight * np.sum(inner)
-        return 
+        return
 
     def fwd(self, x):
         self.update(x)
@@ -705,7 +839,7 @@ class BinarizationPenalty:
 
     def rev(self, x):
         self.update(x)
-        grad = (1 - 2*x) * self.weight * self.E
+        grad = (1 - 2 * x) * self.weight * self.E
         return grad
 
     def fg(self, x):
@@ -715,12 +849,20 @@ class BinarizationPenalty:
 
 
 class AugmentedLagrangian:
-    def __init__(self, objective, constraints, constraint_vals,
-                 initial_multipliers, x0, penalty=10, options=None,
-                 periodic_relaxation=None):
+    def __init__(
+        self,
+        objective,
+        constraints,
+        constraint_vals,
+        initial_multipliers,
+        x0,
+        penalty=10,
+        options=None,
+        periodic_relaxation=None,
+    ):
         """
         Optimization wrapper that uses the Augmented Lagrangian Method
-        to iteratively solve for the optimal lagrange multipliers of 
+        to iteratively solve for the optimal lagrange multipliers of
         multiple planes to be optimized. Based on Emiel Por's 2022 SPIE
         Proceeding
 
@@ -750,28 +892,27 @@ class AugmentedLagrangian:
         self.constraint_vals = constraint_vals
         self.multipliers = initial_multipliers
         self.penalty = penalty
-        self.rho = penalty # this gets dynamically updated
+        self.rho = penalty  # this gets dynamically updated
         self.options = options
 
         # Init variables
         self.x0 = x0
-        self.x = x0 # this gets updated for every call to step
+        self.x = x0  # this gets updated for every call to step
 
         # init f and g
-        self.refresh() 
+        self.refresh()
         self.cost = []
         self.periodic_relaxation = periodic_relaxation
 
         # Optionally init periodic relaxation
         if self.periodic_relaxation is not None:
-
             # Get the amplitude shape
             shape = self.objective.amp.shape[0]
             xx = np.linspace(-shape / 2, shape / 2, self.objective.amp.shape[0])
             xx, yy = np.meshgrid(xx, xx)
             r = np.hypot(xx, yy)
-            self.kernel = np.exp(-(r / periodic_relaxation) ** 2)
-        
+            self.kernel = np.exp(-((r / periodic_relaxation) ** 2))
+
     def _setup_multipliers(self):
         """Optional method to scale mutlipliers by the gradient
         of the constraint violation, though typically they start at
@@ -804,12 +945,13 @@ class AugmentedLagrangian:
 
         # reset the f, g values
         self.x = x
-        
+
         # Evaluate the objective function
         f, g = self.objective.fg(x)
 
-        for opt, con, val in zip(self.constraints, self.constraint_vals, self.multipliers):
-            
+        for opt, con, val in zip(
+            self.constraints, self.constraint_vals, self.multipliers
+        ):
             # Evaluate function and gradient for constraint
             _f, _g = opt.fg(x)
 
@@ -817,17 +959,15 @@ class AugmentedLagrangian:
             c = _f - con
 
             if c <= val / self.rho:
-                
                 # Add to objective function
-                f += -1 * val * c + (self.rho / 2) * c ** 2
-                
+                f += -1 * val * c + (self.rho / 2) * c**2
+
                 # Add to gradient
                 g += (-1 * val + self.rho * c) * _g
 
             elif c > val / self.rho:
-                
                 # Add to objective function
-                f += -1 * val ** 2 / self.rho
+                f += -1 * val**2 / self.rho
 
                 # Function is constant here, so nothing to add to gradient
         self.f = f
@@ -842,70 +982,75 @@ class AugmentedLagrangian:
         """
         Runs an iteration of the augmented lagrangian method
         """
-        
+
         # Optionally apply periodic relaxation to 'kick' out of
-        # present solution space. Needs to happen prior to the 
+        # present solution space. Needs to happen prior to the
         # 'inner problem' so that the solution can be optimized
         if self.periodic_relaxation is not None:
-            
             # To the frequency domain jimbo
             aperture = np.copy(self.objective.amp)
             aperture[self.objective.amp_select] = self.x
-            
+
             aperture = convolve_2d(aperture, self.kernel, normalize=True)
 
             self.x = aperture[self.objective.amp_select]
-        
+
         if hasattr(self.x, "get"):
             self.x = self.x.get()
-        
+
         # Prysm's more GPU-friendly method
         # opt = F77LBFGSB(self.fg,
         #                 self.x,
         #                 memory=memory,
         #                 upper_bounds=tnp.ones(self.x.shape),
         #                 lower_bounds=tnp.zeros(self.x.shape))
-        
+
         # Progress bar my beloved
-        pbar = tqdm(total=self.options['maxiter'], desc="Coronagraph go brr")
-        
+        pbar = tqdm(total=self.options["maxiter"], desc="Coronagraph go brr")
+
         def callback(xk):
             # Update with current function value
-            pbar.set_postfix({'f(x)': self.f})
+            pbar.set_postfix({"f(x)": self.f})
             pbar.update(1)
 
         callback = None
 
         # Define bounds for APLC
         bounds = tnp.vstack([tnp.zeros(self.x.shape), tnp.ones(self.x.shape)]).T
-        
+
         # Trying to work with scipy
-        results = minimize(self.fg, self.x, method="L-BFGS-B", jac=True,
-                           bounds=bounds, callback=callback,
-                           options=self.options)
+        results = minimize(
+            self.fg,
+            self.x,
+            method="L-BFGS-B",
+            jac=True,
+            bounds=bounds,
+            callback=callback,
+            options=self.options,
+        )
         self.x = results.x
         print(results)
         pbar.close()
 
         print(f"Running L-BFGS-B with maxiter={maxiter} and memory={memory}")
-        print("Starting values of ") 
+        print("Starting values of ")
         f, g = self.fg(self.x)
-         
+
         print(f"f={f}")
         print(f"g={g}")
-        print(f"lambda={self.multipliers[0]}") 
-        print(f"rho={self.rho}") 
-        
+        print(f"lambda={self.multipliers[0]}")
+        print(f"rho={self.rho}")
+
         # try:
         #     for _ in tqdm(range(maxiter)):
         #         opt.step()
-        #         
+        #
         #         # Helps to break out
         #         task_str = opt.task.tobytes().decode('utf-8').strip('\x00').strip()
         #         print(task_str)
         #         if 'CONVERGENCE' in task_str or 'STOP' in task_str:
         #             break
-        #     
+        #
         # except StopIteration as e:
         #     final_result = e.value
 
@@ -913,10 +1058,11 @@ class AugmentedLagrangian:
         # self.x = self.objective.aplc[self.objective.amp_select]
 
         # Update the lagrange multipliers
-        cost = 0 # init cost
+        cost = 0  # init cost
 
-        for i, (opt, con, val) in enumerate(zip(self.constraints, self.constraint_vals, self.multipliers)):
-            
+        for i, (opt, con, val) in enumerate(
+            zip(self.constraints, self.constraint_vals, self.multipliers)
+        ):
             # Evaluate function and gradient for constraint
             _f, _g = opt.fg(self.x)
 
@@ -928,11 +1074,10 @@ class AugmentedLagrangian:
 
             # Update current cost
             cost += _f
-        
+
         # Update the penalty
         self.rho *= self.penalty
         self.cost.append(cost)
-
 
 
 class PAPCOptimizer:
@@ -940,21 +1085,32 @@ class PAPCOptimizer:
     There is no focal plane mask or lyot stop
 
     """
-    def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx,
-                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None,
-                 activation=None):
+
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        basis,
+        dark_hole,
+        dh_dx,
+        dh_target=1e-10,
+        initial_amplitude=None,
+        center_wavelength=None,
+        activation=None,
+    ):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float64)
 
         if center_wavelength is None:
-                self.c_wvl = wvl
+            self.c_wvl = wvl
 
         if activation is None:
             self.activation = Dummy(1)
 
         else:
             self.activation = activation
-
 
         self.amp = amp
         self.amp_select = self.amp > 1e-9
@@ -975,7 +1131,7 @@ class PAPCOptimizer:
     def update(self, x):
         x = np.array(x)
         if not self.zonal:
-            self.phs = np.tensordot(self.basis, x, axes=(0,0))
+            self.phs = np.tensordot(self.basis, x, axes=(0, 0))
         else:
             # activate
             self.phs = np.zeros(self.amp.shape, dtype=np.float64)
@@ -989,16 +1145,16 @@ class PAPCOptimizer:
         B = focus_fixed_sampling(
             wavefunction=b,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
-
-        I = np.abs(B)**2
-        E = np.sum((I[self.dh] - self.dh_target)**2)
+        I = np.abs(B) ** 2
+        E = np.sum((I[self.dh] - self.dh_target) ** 2)
 
         self.W = W
         self.I = I
@@ -1018,7 +1174,7 @@ class PAPCOptimizer:
     def rev(self, x):
         self.update(x)
         Ibar = np.zeros(self.dh.shape, dtype=np.float64)
-        Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target)
+        Ibar[self.dh] = 2 * (self.I[self.dh] - self.dh_target)
 
         Bbar = 2 * Ibar * self.B
 
@@ -1026,12 +1182,13 @@ class PAPCOptimizer:
         bbar = focus_fixed_sampling_backprop(
             wavefunction=Bbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         Wbar = 2 * np.pi / self.wvl * np.imag(bbar * np.conj(self.b))
 
@@ -1047,7 +1204,7 @@ class PAPCOptimizer:
             return self.abar
         else:
             xbar = Wbar[self.amp_select]
-            abar = self.activation.backprop(xbar) #* xbar
+            abar = self.activation.backprop(xbar)  # * xbar
             return abar
 
     def fg(self, x):
@@ -1061,24 +1218,38 @@ class PAPLCOptimizer:
     FPM and LS are= fixed
 
     """
-    def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx, fpm, ls,
-                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None):
+
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        basis,
+        dark_hole,
+        dh_dx,
+        fpm,
+        ls,
+        dh_target=1e-10,
+        initial_amplitude=None,
+        center_wavelength=None,
+        activation=None,
+    ):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float64)
 
-        #self.val_grads = val_grads
-        #self.initial_multipliers = initial_multipliers
-        #self.penalty = penalty
+        # self.val_grads = val_grads
+        # self.initial_multipliers = initial_multipliers
+        # self.penalty = penalty
 
         if center_wavelength is None:
-                self.c_wvl = wvl
+            self.c_wvl = wvl
 
         if activation is None:
             self.activation = Dummy(1)
 
         else:
             self.activation = activation
-
 
         self.amp = amp
         self.amp_select = self.amp > 1e-9
@@ -1101,7 +1272,7 @@ class PAPLCOptimizer:
     def update(self, x):
         x = np.array(x)
         if not self.zonal:
-            self.phs = np.tensordot(self.basis, x, axes=(0,0))
+            self.phs = np.tensordot(self.basis, x, axes=(0, 0))
         else:
             # activate
             self.phs = np.zeros(self.amp.shape, dtype=np.float64)
@@ -1115,12 +1286,13 @@ class PAPLCOptimizer:
         B = focus_fixed_sampling(
             wavefunction=b,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # apply focal plane mask
         C = B * self.fpm
@@ -1129,12 +1301,13 @@ class PAPLCOptimizer:
         c = focus_fixed_sampling(
             wavefunction=C,
             input_dx=self.dh_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.amp_dx,
             output_samples=self.amp.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # apply lyot stop
         d = c * self.ls
@@ -1143,15 +1316,16 @@ class PAPLCOptimizer:
         D = focus_fixed_sampling(
             wavefunction=d,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
-        I = np.abs(D)**2
-        E = np.sum((I[self.dh] - self.dh_target)**2)
+        I = np.abs(D) ** 2
+        E = np.sum((I[self.dh] - self.dh_target) ** 2)
 
         self.W = W
         self.I = I
@@ -1175,7 +1349,7 @@ class PAPLCOptimizer:
     def rev(self, x):
         self.update(x)
         Ibar = np.zeros(self.dh.shape, dtype=np.float64)
-        Ibar[self.dh] = 2*(self.I[self.dh] - self.dh_target)
+        Ibar[self.dh] = 2 * (self.I[self.dh] - self.dh_target)
 
         Dbar = 2 * Ibar * self.D
 
@@ -1183,12 +1357,13 @@ class PAPLCOptimizer:
         dbar = focus_fixed_sampling_backprop(
             wavefunction=Dbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # backprop lyot stop application
         cbar = self.ls.conj() * dbar
@@ -1197,12 +1372,13 @@ class PAPLCOptimizer:
         Cbar = focus_fixed_sampling_backprop(
             wavefunction=cbar,
             input_dx=self.dh_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.amp_dx,
-            output_samples=self.I.shape, # this was self.amp
+            output_samples=self.I.shape,  # this was self.amp
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # backprop fpm application
         Bbar = self.fpm.conj() * Cbar
@@ -1211,12 +1387,13 @@ class PAPLCOptimizer:
         bbar = focus_fixed_sampling_backprop(
             wavefunction=Bbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         Wbar = 2 * np.pi / self.wvl * np.imag(bbar * np.conj(self.b))
 
@@ -1236,9 +1413,9 @@ class PAPLCOptimizer:
             return self.abar
         else:
             xbar = Wbar[self.amp_select]
-#             xbar_neg = xbar < 0.
-#             xbar_pos = xbar >= 0.
-            abar = self.activation.backprop(xbar) #* xbar
+            #             xbar_neg = xbar < 0.
+            #             xbar_pos = xbar >= 0.
+            abar = self.activation.backprop(xbar)  # * xbar
             return abar
 
     def fg(self, x):
@@ -1246,14 +1423,30 @@ class PAPLCOptimizer:
         f = self.E
         return f, g
 
+
 class APLCOptimizer:
     """An apodized pupil coronagraph optimizer, pupil is real-valued and gray-scale,
     FPM and LS are fixed
 
     """
-    def __init__(self, amp, amp_dx, efl, wvl, basis, dark_hole, dh_dx, fpm, ls,
-                 dh_target=1e-10, initial_amplitude=None, center_wavelength=None, activation=None,
-                 weight=1):
+
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        basis,
+        dark_hole,
+        dh_dx,
+        fpm,
+        ls,
+        dh_target=1e-10,
+        initial_amplitude=None,
+        center_wavelength=None,
+        activation=None,
+        weight=1,
+    ):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float64)
 
@@ -1265,7 +1458,6 @@ class APLCOptimizer:
 
         else:
             self.activation = activation
-
 
         self.amp = amp
         self.amp_select = self.amp > 1e-9
@@ -1289,7 +1481,7 @@ class APLCOptimizer:
     def update(self, x):
         x = np.array(x)
         if not self.zonal:
-            self.aplc = np.tensordot(self.basis, x, axes=(0,0))
+            self.aplc = np.tensordot(self.basis, x, axes=(0, 0))
         else:
             # activate
             self.aplc = np.zeros(self.amp.shape, dtype=np.float64)
@@ -1303,15 +1495,16 @@ class APLCOptimizer:
         B = focus_fixed_sampling(
             wavefunction=b,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(0, 0),
-            method='mdft')
-        
+            method="mdft",
+        )
+
         # Get contrast normalization (approx)
-        self.contrast_norm = (np.abs(B)**2).max()
+        self.contrast_norm = (np.abs(B) ** 2).max()
 
         # apply focal plane mask
         C = B * self.fpm
@@ -1320,12 +1513,13 @@ class APLCOptimizer:
         c = focus_fixed_sampling(
             wavefunction=C,
             input_dx=self.dh_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.amp_dx,
             output_samples=self.amp.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # apply lyot stop
         d = c * self.ls
@@ -1334,22 +1528,23 @@ class APLCOptimizer:
         D = focus_fixed_sampling(
             wavefunction=d,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.dh.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
-        I = np.abs(D)**2
+        I = np.abs(D) ** 2
         N = I / self.contrast_norm
         self.alpha = 1 / np.max(N[self.dh] - self.dh_target)
 
         # Trying smooth maximum
-        E = -log_sum_exp(N[self.dh] - self.dh_target, alpha=self.alpha)
+        # E = -log_sum_exp(N[self.dh] - self.dh_target, alpha=self.alpha)
 
         # Original error function is MSE:
-        #E = np.sum((N[self.dh] - self.dh_target)**2) * self.weight
+        E = np.sum((N[self.dh] - self.dh_target) ** 2) * self.weight
 
         self.aplc = aplc
         self.I = I
@@ -1374,10 +1569,10 @@ class APLCOptimizer:
     def rev(self, x):
         self.update(x)
         Nbar = np.zeros(self.dh.shape, dtype=np.float64)
-        Nbar[self.dh] = -softmax(self.N[self.dh] - self.dh_target, alpha=self.alpha)
-         
+        # Nbar[self.dh] = -softmax(self.N[self.dh] - self.dh_target, alpha=self.alpha)
+
         # Original backprop of mean squared error
-        #Nbar[self.dh] = 2*(self.N[self.dh] - self.dh_target) * self.weight
+        Nbar[self.dh] = 2 * (self.N[self.dh] - self.dh_target) * self.weight
         Ibar = Nbar / self.contrast_norm
         Dbar = 2 * Ibar * self.D
 
@@ -1385,12 +1580,13 @@ class APLCOptimizer:
         dbar = focus_fixed_sampling_backprop(
             wavefunction=Dbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # backprop lyot stop application
         cbar = self.ls.conj() * dbar
@@ -1399,12 +1595,13 @@ class APLCOptimizer:
         Cbar = focus_fixed_sampling_backprop(
             wavefunction=cbar,
             input_dx=self.dh_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.amp_dx,
-            output_samples=self.I.shape, # this was self.amp
+            output_samples=self.I.shape,  # this was self.amp
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # backprop fpm application
         Bbar = self.fpm.conj() * Cbar
@@ -1413,12 +1610,13 @@ class APLCOptimizer:
         bbar = focus_fixed_sampling_backprop(
             wavefunction=Bbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         aplcbar = np.real(bbar)
 
@@ -1440,9 +1638,9 @@ class APLCOptimizer:
             return self.abar
         else:
             xbar = self.aplcbar[self.amp_select]
-#             xbar_neg = xbar < 0.
-#             xbar_pos = xbar >= 0.
-            abar = self.activation.backprop(xbar) #* xbar
+            #             xbar_neg = xbar < 0.
+            #             xbar_pos = xbar >= 0.
+            abar = self.activation.backprop(xbar)  # * xbar
             return abar
 
     def fg(self, x):
@@ -1458,7 +1656,17 @@ class ThroughputOptimizer:
     This is substantially more simple because no propagation is actually required
     """
 
-    def __init__(self, amp, wvl, basis, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1, point_symmetric=False):
+    def __init__(
+        self,
+        amp,
+        wvl,
+        basis,
+        ls,
+        initial_amplitude=None,
+        center_wavelength=None,
+        relative_weight=1,
+        point_symmetric=False,
+    ):
         if initial_amplitude is None:
             aplc = np.zeros(amp.shape, dtype=np.float64)
 
@@ -1477,9 +1685,8 @@ class ThroughputOptimizer:
         self.point_symmetric = point_symmetric
 
         if self.point_symmetric:
-
             # Go up to half the apodizer shape, unsure if there needs to be a +1 here
-            self.amp_select[:, :self.amp.shape[0] // 2] = 0
+            self.amp_select[:, : self.amp.shape[0] // 2] = 0
 
     def set_optimization_method(self, zonal=False):
         self.zonal = zonal
@@ -1487,29 +1694,26 @@ class ThroughputOptimizer:
     def update(self, x):
         x = np.array(x)
         if not self.zonal:
-            self.aplc = np.tensordot(self.basis, x, axes=(0,0))
-        
+            self.aplc = np.tensordot(self.basis, x, axes=(0, 0))
 
         else:
-            
             # activate
             self.aplc[self.amp_select] = x
-            
+
             # If point symmetric, need to account for mirror symmetry
             if self.point_symmetric:
                 self.aplc += np.fliplr(self.aplc)
-        
 
         # impose constraints
         aplc = np.real(self.aplc)
         b = self.amp * aplc
-        
+
         # Ignoring the lyot stop
         # c = self.ls[self.amp_select] * b[self.amp_select]
         c = b[self.amp_select]
 
-        #I = np.abs(c)**2
-        I = c / self.amp[self.amp_select] # make throughput sampling-independent
+        # I = np.abs(c)**2
+        I = c / self.amp[self.amp_select]  # make throughput sampling-independent
 
         # Iinv = I**-1
         # E = np.sum(I)
@@ -1537,11 +1741,11 @@ class ThroughputOptimizer:
         # Ibar = -1 * ((self.Iinv.conj()) ** -2) * Iinvbar
         Ibar = -1 * self.I * self.eta
         cbar = Ibar / self.amp[self.amp_select]
-        #cbar = 2 * Ibar * self.c
+        # cbar = 2 * Ibar * self.c
 
         # backprop lyot stop application
         # bbar = self.ls.conj()[self.amp_select] * cbar
-        bbar = cbar #* self.ls[self.amp_select]
+        bbar = cbar  # * self.ls[self.amp_select]
         aplcbar = np.real(bbar)
 
         if not self.zonal:
@@ -1557,7 +1761,7 @@ class ThroughputOptimizer:
             return self.abar
 
         else:
-            xbar = self.aplcbar #[self.amp_select]
+            xbar = self.aplcbar  # [self.amp_select]
             return xbar
 
     def fg(self, x):
@@ -1566,13 +1770,27 @@ class ThroughputOptimizer:
         return f, g
 
 
-
 class CoreThroughputOptimizer:
     """An apodized pupil coronagraph optimizer for core throughput, pupil is real-valued and gray-scale,
     FPM and LS are fixed
 
     """
-    def __init__(self, amp, amp_dx, efl, wvl, basis, window, dh_dx, fpm, ls, initial_amplitude=None, center_wavelength=None, relative_weight=1):
+
+    def __init__(
+        self,
+        amp,
+        amp_dx,
+        efl,
+        wvl,
+        basis,
+        window,
+        dh_dx,
+        fpm,
+        ls,
+        initial_amplitude=None,
+        center_wavelength=None,
+        relative_weight=1,
+    ):
         if initial_amplitude is None:
             aplc = np.ones(amp.shape, dtype=np.float64)
 
@@ -1590,7 +1808,7 @@ class CoreThroughputOptimizer:
         self.zonal = True
         self.fpm = fpm
         self.ls = ls
-        self.window = window # window the size of the PSF core
+        self.window = window  # window the size of the PSF core
         self.cost = []
         self.eta = relative_weight
         self.total_energy = np.sum(self.amp)
@@ -1601,7 +1819,7 @@ class CoreThroughputOptimizer:
     def update(self, x):
         x = np.array(x)
         if not self.zonal:
-            self.aplc = np.tensordot(self.basis, x, axes=(0,0))
+            self.aplc = np.tensordot(self.basis, x, axes=(0, 0))
 
         else:
             # activate
@@ -1614,23 +1832,24 @@ class CoreThroughputOptimizer:
         # Noticing that the parts behind the Lyot Stop have zero gradient,
         # therefore, they only control contrast. What if we maximize the
         # pre-FPM core throughput?
-        c = b #self.ls * b
+        c = b  # self.ls * b
 
         # prop to focal plane mask
         C = focus_fixed_sampling(
             wavefunction=c,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.window.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
-        I = np.abs(C)**2
+        I = np.abs(C) ** 2
         J = I / self.total_energy
-        E = np.sum((J[self.window])**2)
-        
+        E = np.sum((J[self.window]) ** 2)
+
         self.aplc = aplc
         self.I = I
         self.J = J
@@ -1650,28 +1869,29 @@ class CoreThroughputOptimizer:
 
     def rev(self, x):
         self.update(x)
-        Jbar = - 2 * self.window * self.J * self.eta
+        Jbar = -2 * self.window * self.J * self.eta
         Ibar = Jbar / self.total_energy
-        
-        #Ibar = - 2 * self.window * self.I * self.eta
+
+        # Ibar = - 2 * self.window * self.I * self.eta
         Cbar = 2 * Ibar * self.C
 
         # backprop from image to lyot stop
         cbar = focus_fixed_sampling_backprop(
             wavefunction=Cbar,
             input_dx=self.amp_dx,
-            prop_dist = self.efl,
+            prop_dist=self.efl,
             wavelength=self.wvl,
             output_dx=self.dh_dx,
             output_samples=self.aplc.shape,
             shift=(0, 0),
-            method='mdft')
+            method="mdft",
+        )
 
         # backprop lyot stop application
         # Noticing that the parts behind the Lyot Stop have zero gradient,
         # therefore, they only control contrast. What if we maximize the
         # pre-FPM core throughput?
-        bbar = self.amp * cbar #self.ls.conj() * cbar
+        bbar = self.amp * cbar  # self.ls.conj() * cbar
         aplcbar = np.real(bbar)
 
         if not self.zonal:
@@ -1698,8 +1918,7 @@ class CoreThroughputOptimizer:
 
 # make a wrapper that calls fwd/reverse
 class APLCWrapper:
-    def __init__(self,optlist):
-
+    def __init__(self, optlist):
         """optlist is a list of APLCOptimizer2 instances"""
 
         self.optlist = optlist
@@ -1713,7 +1932,7 @@ class APLCWrapper:
         self.f = 0
         self.g = 0
 
-    def fg(self,x):
+    def fg(self, x):
 
         # reset the f, g values
         self.refresh()
