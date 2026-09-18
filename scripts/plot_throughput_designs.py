@@ -15,24 +15,32 @@ from pathlib import Path
 import time
 import numpy as tnp
 import sys
+import hwostyle
+
+hwostyle.use("light")
 
 # The prysm stuff
 from prysm.mathops import np, set_backend_to_cupy
 from prysm.propagation import focus_fixed_sampling
 from prysm.fttools import MatrixDFTExecutor
 
-from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
+from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
 from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 import sys
 
-IWAS = [3, 3.5, 4, 4.5, 5, 5.5, 6]
+IWAS = [3.5, 4, 4.5, 5, 5.5, 6]
+IWAS = IWAS[::-1]
+print(type(IWAS))
 okabe_colorblind8 = ['#E69F00', '#56B4E9', '#009E73',
                      '#F0E442', '#0072B2', '#D55E00', '#CC79A7','#000000']
+
+cmap = plt.cm.plasma
+colors = cmap(np.linspace(0, 1, len(IWAS)))
 
 plt.figure()
 plt.title("Field PSF Core Throughput")
 # Construct coronagraph and build throughput plot
-for color, IWA in zip(okabe_colorblind8, IWAS):
+for color, IWA in zip(colors, IWAS):
     IWA = float(IWA)
     # --- USER INPUT DESIGN PARAMS HERE
     USE_GPU = True # Use GPU for the optimization
@@ -177,6 +185,13 @@ for color, IWA in zip(okabe_colorblind8, IWAS):
     throughput = []
     throughput_07 = []
 
+    before, ls, coro = prop_coro(aperture, np.ones_like(focal_plane_mask), ls_mask, tilt=0, wave=band)
+    rx = np.sqrt(fx**2 + fy**2)
+    mask = np.zeros_like(rx, dtype=int)
+    mask[rx < core_size] = 1
+    ref_throughput = np.sum(before[mask==1])
+
+
     for i, ld in tqdm(enumerate(tilt_lds)):
 
         before, ls, coro = prop_coro(newmask, focal_plane_mask, ls_mask, tilt=ld, wave=band)
@@ -200,7 +215,8 @@ for color, IWA in zip(okabe_colorblind8, IWAS):
         # plt.show()
 
         value_in_aperture = np.sum(coro_I[mask==1])
-        throughput_07.append(value_in_aperture / np.sum(NWVLS * aperture))
+        #throughput_07.append(value_in_aperture / np.sum(NWVLS * aperture))
+        throughput_07.append(value_in_aperture / ref_throughput)
     
     # get the bmh colors
     # colors = plt.rcParams['axes.prop_cycle'].by_key()['color'][1:]
@@ -214,11 +230,10 @@ for color, IWA in zip(okabe_colorblind8, IWAS):
         plt.plot(tilt_lds, np.array(throughput_07), linestyle='solid', color=colors[0])
         plt.plot(tilt_lds, -np.array(throughput), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
 
-plt.plot(tilt_lds.get(), -np.array(throughput).get(), linestyle='solid', color='black', label=r'$r = 0.7\lambda / D$')
 plt.legend()
 plt.xlabel('Angular Separation, '+r'$\lambda / D$')
-plt.ylabel('Throughput')
-plt.ylim(0,0.5)
+plt.ylabel('Core Throughput, '+r'$r \leq 0.7\lambda/D$')
+plt.ylim(0,0.7)
 plt.xlim(0, OWA)
 plt.show()
 

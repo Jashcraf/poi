@@ -36,7 +36,7 @@ from prysm.x.optym import (
     AdaMomentum
 )
 
-from poi.aplc_design import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
+from poi.masks import ImgSamplingSpec, inner_core_mask, annular_mask, lyot_mask
 from poi.aplc_design import APLCOptimizer, APLCWrapper, ThroughputOptimizer
 import sys
 

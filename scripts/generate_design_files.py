@@ -34,6 +34,7 @@ from poi.aplc_design import (
     ThroughputOptimizer,
 )
 from poi.masks import ImgSamplingSpec, annular_mask, inner_core_mask, lyot_mask
+from poi.x._prysm_lbfgsb import PrysmLBFGSB
 
 # Handle incoming args
 if len(sys.argv) > 1:
@@ -59,6 +60,7 @@ AZMAX = AZMAG / 2
 OVERSAMPLE = 4  # pix per lam/D
 BANDWIDTH = 10
 pth_to_aperture = Path.home() / "poi/luvoir_b_pupil_512px.fits"
+# pth_to_aperture = Path.home() / "poi/pupil_hwo_eac1_nostrut_pixel_n1000.fits"
 # LS_FRAC = 0.95 # Fraction of the pupil radius to use for the Lyot stop
 LS_OBSCURATION_RATIO = 0  # Ratio of the Lyot stop obscuration to the pupil radius
 MAX_ITERS = 100_000
@@ -193,10 +195,20 @@ else:
 
 
 # Dry-run to debug
-_, _ = opt_contrast_throughput.fg(x0)
+f, g = opt_contrast_throughput.fg(x0)
+print(type(f))
+print(type(g))
 
 
 # initialize the optimizer with box constraints
+# x0 = np.ones(aplc.amp.shape, dtype=np.float64)[aplc.amp_select]
+# opt = PrysmLBFGSB(
+#     opt_contrast_throughput.fg,
+#     x0,
+#     memory=10,
+#     upper_bounds=np.ones(x0.shape),
+#     lower_bounds=np.zeros(x0.shape),
+# )
 opt = F77LBFGSB(
     opt_contrast_throughput.fg,
     x0,
